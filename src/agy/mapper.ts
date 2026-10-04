@@ -1,0 +1,370 @@
+﻿// EventMapper: normalized agy events -> DSH StreamChunk protocol (spec
+// section 3.3). Contract obligations honored here: usage precedes finish
+// and nothing follows it; one content block open at a time; repeated step
+// updates grow text by suffix-delta so both snapshot and delta payload
+// styles stream correctly.
+//
+// v0.3 native tool mirroring: a COMPLETED agy tool step cuts the span —
+// the mapper emits a tool-call block addressed to the registered agy_tool
+// mirror and finishes with reason "tool-calls". DSH's agent loop then
+// dispatches the mirror, records real tool/call + tool/result session
+// events, and renders the activity with its native tool-card UI. The
+// mirror returns instantly with the output agy already recorded, and the
+// adapter's next span (a new stream() call) resumes from the message-
+// derived cursor. Text/reasoning streaming and the result envelope behave
+// as before; thinking-only turns stay token-annotated because agy print
+// mode never streams the thoughts themselves.
+import type { StreamChunk, TokenUsage, ToolCallId } from '@deepseek-ai/dsh-llm'
+import * as dshLlm from '@deepseek-ai/dsh-llm'
+import type { AgyEvent, RawUsage } from './types.js'
+import { mirrorCallId } from './recording.js'
+import { buildMirrorRunCode, MIRROR_TOOL_NAME, WRAPPER_TOOL_NAME, toolStepBrief } from './mirror-tool.js'
+
+const toToolCallId: (id: string) => ToolCallId =
+  (dshLlm as { ToolCallId?: (id: string) => ToolCallId; CallId?: (id: string) => ToolCallId }).ToolCallId ??
+  (dshLlm as { ToolCallId?: (id: string) => ToolCallId; CallId?: (id: string) => ToolCallId }).CallId ??
+  ((id: string) => id as unknown as ToolCallId)
+
+export function usageFromRaw(raw: RawUsage): TokenUsage {
+  // The DSH session layer rejects chunks carrying undefined-valued fields
+  // (lossless-JSON boundary), so optional counters are omitted, not set to
+  // undefined.
+  const usage: TokenUsage = {
+    inputTokens: raw.input_tokens ?? 0,
+    outputTokens: raw.output_tokens ?? 0,
+  }
+  if (raw.cache_read_tokens !== undefined) usage.cacheReadTokens = raw.cache_read_tokens
+  if (raw.cache_write_tokens !== undefined) usage.cacheWriteTokens = raw.cache_write_tokens
+  if (raw.thinking_tokens !== undefined) usage.reasoningTokens = raw.thinking_tokens
+  return usage
+}
+
+/** Suffix-delta: emit only what grew; fall back to a newline + full text. */
+export function suffixDelta(prev: string, next: string): string {
+  if (next === prev) return ''
+  if (prev === '') return next
+  if (next.startsWith(prev)) return next.slice(prev.length)
+  return '\n' + next
+}
+
+export interface EventMapperOptions {
+  /** Run whose event indices mint mirror callIds. */
+  runId: string
+  /** Cut spans on completed tool steps (main turns). False for auxiliary calls. */
+  cutOnTool: boolean
+  /** Whether an earlier span of this run already streamed assistant text. */
+  initialSawText?: boolean
+  /**
+   * True if DSH is in Code Mode (options.tools has 'run_code').
+   * False if DSH is in Native / Standard Mode (options.tools has 'agy_tool' or standard tools).
+   */
+  useCodeWrapper?: boolean
+  /**
+   * Shared per-run usage tracker (lives on the recording, spans share it).
+   * Step usage is per-call (current context); the result envelope is
+   * conversation-cumulative and must never reach DSH's token meter.
+   */
+  usage?: {
+    noteStepUsage(raw: RawUsage): void
+    finalUsage(resultRaw: RawUsage): RawUsage
+  }
+  /**
+   * Resolve FULL tool args for a recorded step from the agy conversation DB
+   * (stream args are stripped by agy's filterToolParameters). Called when the
+   * mapper cuts a tool span; resolved args are stored back on the recording so
+   * the mirror's enrichArgs/execute see the same full payload.
+   */
+  fullArgsAt?: (eventIndex: number) => Promise<Record<string, unknown> | null>
+  /**
+   * Synchronously-available full args, keyed by event index. driveSpan
+   * pre-resolves these (awaiting fullArgsAt) and hands them to the mapper so
+   * the emitted tool-call arguments carry the complete payload without making
+   * map() async.
+   */
+  resolvedFullArgs?: ReadonlyMap<number, Record<string, unknown>>
+  /**
+   * Synchronously-available thoughts, keyed by event index. driveSpan
+   * pre-resolves these from the agy conversation DB so reasoning blocks stream
+   * real thought text instead of token-count annotations.
+   */
+  resolvedThoughts?: ReadonlyMap<number, string>
+}
+
+export class EventMapper {
+  private blockIdx = 0
+  private openType: 'text' | 'reasoning' | null = null
+  private openAcc = ''
+  private readonly emittedByKey = new Map<string, string>()
+  private readonly announcedTools = new Set<string>()
+  private readonly thinkingAnnounced = new Set<string>()
+  private bannerOnlyThinkingEmitted = false
+  private sawTextStep: boolean
+  private finished = false
+
+  constructor(private readonly opts: EventMapperOptions) {
+    this.sawTextStep = opts.initialSawText === true
+  }
+
+  /** Whether a terminal finish chunk has been emitted. */
+  get isFinished(): boolean {
+    return this.finished
+  }
+
+  private *ensureBlock(type: 'text' | 'reasoning'): Generator<StreamChunk> {
+    if (this.openType === type) return
+    const close = this.closeOpen()
+    if (close) yield close
+    this.openType = type
+    this.openAcc = ''
+    yield { type: 'block-start', index: this.blockIdx, blockType: type }
+  }
+
+  private closeOpen(): StreamChunk | null {
+    if (this.openType === null) return null
+    const block =
+      this.openType === 'text'
+        ? { type: 'text' as const, text: this.openAcc }
+        : { type: 'reasoning' as const, text: this.openAcc }
+    const chunk: StreamChunk = { type: 'block-end', index: this.blockIdx, block: block }
+    this.blockIdx++
+    this.openType = null
+    this.openAcc = ''
+    return chunk
+  }
+
+  private appendDelta(delta: string): StreamChunk | null {
+    if (delta === '') return null
+    this.openAcc += delta
+    return this.openType === 'text'
+      ? { type: 'text-delta', index: this.blockIdx, text: delta }
+      : { type: 'reasoning-delta', index: this.blockIdx, text: delta }
+  }
+
+  /**
+   * Emit thinking: always retain the [agy thinking turn · ... thinking tokens]
+   * banner. When real thought prose is present, place the banner and thought
+   * text on the same initial line so DSH's collapsed summary renders:
+   *   [agy thinking turn · *** thinking tokens] [Chain-of-Thought body]
+   */
+  private *emitThinking(absIndex: number, thoughtTokens: number): Generator<StreamChunk> {
+    const text = this.opts.resolvedThoughts?.get(absIndex)
+    const hasText = text !== undefined && text.trim() !== ''
+    // Only surface a reasoning row when we actually have thought/intent prose.
+    // Banner-only token chips clutter tool-heavy turns and teach nothing.
+    if (!hasText) return
+
+    yield* this.ensureBlock('reasoning')
+    const banner =
+      thoughtTokens > 0
+        ? '[agy thinking turn · ' + thoughtTokens + ' thinking tokens]'
+        : '[agy thinking turn]'
+    const combined = `${banner} ${text!.trim()}\n`
+    const d = this.appendDelta(combined)
+    if (d) yield d
+  }
+
+  /**
+   * Map one event. `absIndex` is the event's position in the run recording;
+   * it mints the mirror callId and is what continuation detection parses
+   * back out of the DSH message list.
+   */
+  *map(ev: AgyEvent, absIndex: number): Generator<StreamChunk> {
+    if (this.finished) return
+    if (ev.kind === 'init') return
+    if (ev.kind === 'garbage') return
+    if (ev.kind === 'step') {
+      if (ev.usage) this.opts.usage?.noteStepUsage(ev.usage)
+      if (ev.stepKind === 'text') {
+        const thoughtTokens = ev.usage?.thinking_tokens ?? 0
+        const stepTextEmitted = (this.emittedByKey.get(ev.stepKey) ?? '') !== ''
+        const dbThought = this.opts.resolvedThoughts?.get(absIndex)
+        const hasRealThought = dbThought !== undefined && dbThought.trim() !== ''
+        const shouldAnnounce = hasRealThought || thoughtTokens > 0
+
+        // If real thoughts (or token count fallback) are available and no text has
+        // been emitted yet, stream the reasoning block FIRST before answer text.
+        if (shouldAnnounce && !stepTextEmitted && !this.thinkingAnnounced.has(ev.stepKey)) {
+          this.thinkingAnnounced.add(ev.stepKey)
+          yield* this.emitThinking(absIndex, thoughtTokens)
+        }
+        const deferred = shouldAnnounce && stepTextEmitted && !this.thinkingAnnounced.has(ev.stepKey)
+        if (ev.text === '' && !ev.fragment) {
+          // DONE tail carrying usage with no text: the step is already
+          // complete — flush the deferred annotation now.
+          if (deferred) {
+            this.thinkingAnnounced.add(ev.stepKey)
+            yield* this.emitThinking(absIndex, thoughtTokens)
+          }
+          return
+        }
+        this.sawTextStep = true
+        yield* this.ensureBlock('text')
+        let d: StreamChunk | null
+        if (ev.fragment === true) {
+          // Sequential fragment (text_delta): append in arrival order.
+          const acc = (this.emittedByKey.get(ev.stepKey) ?? '') + ev.text
+          this.emittedByKey.set(ev.stepKey, acc)
+          d = this.appendDelta(ev.text)
+        } else {
+          // Cumulative snapshot: emit only the grown suffix.
+          const prev = this.emittedByKey.get(ev.stepKey) ?? ''
+          const delta = suffixDelta(prev, ev.text)
+          this.emittedByKey.set(ev.stepKey, ev.text)
+          d = this.appendDelta(delta)
+        }
+        if (d) yield d
+        if (deferred) {
+          // This DONE closed the step's text: the chip lands after the
+          // complete sentence, never between two of its fragments.
+          this.thinkingAnnounced.add(ev.stepKey)
+          yield* this.emitThinking(absIndex, thoughtTokens)
+        }
+        return
+      }
+      if (ev.stepKind === 'thinking' || ev.stepKind === 'subagent') {
+        yield* this.ensureBlock('reasoning')
+        if (ev.stepKind === 'thinking') {
+          const dbThought = this.opts.resolvedThoughts?.get(absIndex)
+          if (dbThought && dbThought.trim() !== '') {
+            const prev = this.emittedByKey.get(ev.stepKey) ?? ''
+            const delta = suffixDelta(prev, dbThought)
+            this.emittedByKey.set(ev.stepKey, dbThought)
+            const d = this.appendDelta(delta)
+            if (d) yield d
+          } else {
+            const prev = this.emittedByKey.get(ev.stepKey) ?? ''
+            const delta = suffixDelta(prev, ev.text)
+            this.emittedByKey.set(ev.stepKey, ev.text)
+            const d = this.appendDelta(delta)
+            if (d) yield d
+          }
+        } else {
+          const d = this.appendDelta('[agy subagent] ' + ev.text + '\n')
+          if (d) yield d
+        }
+        return
+      }
+      if (ev.stepKind === 'tool' && ev.tool) {
+        // Only a COMPLETED step becomes a card.
+        // agy ≥1.1.15 stream-json emits two envelopes per tool step:
+        //  1. state: 'ACTIVE' with name and metadata args only (payload in progress)
+        //  2. state: 'DONE' when complete. Some tools (run_command, view_file)
+        //     carry an output string in tool_info; others (replace_file_content,
+        //     write_to_file) emit no output property on success.
+        // Therefore, a step is complete if state is DONE/ERROR, or if output/error
+        // was recorded (for older agy versions or mocks where state is omitted).
+        const isCompleted =
+          ev.state === 'DONE' ||
+          ev.state === 'ERROR' ||
+          (ev.state === undefined && (ev.tool.output !== undefined || ev.tool.error !== undefined))
+        if (!isCompleted) return
+        if (this.announcedTools.has(ev.stepKey)) return
+        this.announcedTools.add(ev.stepKey)
+        if (!this.opts.cutOnTool) return // auxiliary calls show no tool detail
+        // Cut the span: close any open block, then one tool-call block.
+        // In Code Mode: addressed to run_code wrapping tools['agy_tool']({ run, step }).
+        // In Native Mode: addressed to agy_tool directly with { run, step, tool, input }.
+        // The callId still encodes the (run, eventIndex) cursor for continuation detection.
+        const close = this.closeOpen()
+        if (close) yield close
+        const idx = this.blockIdx
+        const useCode = this.opts.useCodeWrapper === true
+        const toolName = useCode ? WRAPPER_TOOL_NAME : MIRROR_TOOL_NAME
+        // Prefer DB-resolved full args (which include CodeContent /
+        // TargetContent / ReplacementContent stripped from the stream by agy's
+        // filterToolParameters); otherwise fall back to whatever survived the
+        // stream so the card still renders what it has.
+        const fullArgs = this.opts.resolvedFullArgs?.get(absIndex)
+        const effectiveArgs = fullArgs !== undefined
+          ? { ...fullArgs, ...(typeof ev.tool.args === 'object' ? ev.tool.args as Record<string, unknown> : {}) }
+          : ev.tool.args
+        const argumentsJson = useCode
+          ? JSON.stringify(buildMirrorRunCode(this.opts.runId, absIndex, ev.tool.name, toolStepBrief(ev.tool.name, effectiveArgs)))
+          : JSON.stringify({
+              run: this.opts.runId,
+              step: absIndex,
+              tool: ev.tool.name,
+              ...(effectiveArgs !== undefined ? { input: effectiveArgs } : {}),
+            })
+        yield { type: 'block-start', index: idx, blockType: 'tool-call' }
+        yield {
+          type: 'block-end',
+          index: idx,
+          block: {
+            type: 'tool-call',
+            id: toToolCallId(mirrorCallId(this.opts.runId, absIndex)),
+            name: toolName,
+            arguments: argumentsJson,
+          },
+        }
+        this.blockIdx++
+        yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+        yield { type: 'finish', reason: { kind: 'tool-calls' } }
+        this.finished = true
+        return
+      }
+      // title / user-input / unknown: ignored (forward compatibility).
+      return;
+    }
+    // result
+    if (!ev.ok) {
+      // agy reports status=ERROR even when a usable response exists (e.g. a
+      // tool timed out mid-run). Keep the answer, surface the error as a
+      // reasoning annotation, and finish normally. A bare error with no
+      // response stays passive here — the adapter owns terminal failures
+      // (auth / process / invalid-output) and reads the envelope error from
+      // the parser.
+      if (ev.response === '') return
+      if (!this.sawTextStep) {
+        yield* this.ensureBlock('text')
+        const d = this.appendDelta(ev.response)
+        if (d) yield d
+      }
+      if (ev.error !== undefined && ev.error !== '') {
+        yield* this.ensureBlock('reasoning')
+        const d = this.appendDelta('[agy finished with error] ' + ev.error + '\n')
+        if (d) yield d
+      }
+      const closeErr = this.closeOpen()
+      if (closeErr) yield closeErr
+      yield { type: 'usage', usage: usageFromRaw(this.opts.usage?.finalUsage(ev.usage) ?? ev.usage) }
+      yield {
+        type: 'finish',
+        reason: { kind: 'stop' },
+        ...(ev.conversationId !== '' ? { replayState: { response: { conversationId: ev.conversationId } } } : {}),
+      }
+      this.finished = true
+      return
+    }
+    if (!this.sawTextStep && ev.response !== '') {
+      yield* this.ensureBlock('text')
+      const d = this.appendDelta(ev.response)
+      if (d) yield d
+    }
+    const close = this.closeOpen()
+    if (close) yield close
+    yield { type: 'usage', usage: usageFromRaw(this.opts.usage?.finalUsage(ev.usage) ?? ev.usage) }
+    yield {
+      type: 'finish',
+      reason: { kind: 'stop' },
+      ...(ev.conversationId !== '' ? { replayState: { response: { conversationId: ev.conversationId } } } : {}),
+    }
+    this.finished = true
+  }
+
+  /** Terminal error/abort: close what is open, zero usage, failure finish. */
+  *emitFailure(kind: 'error' | 'aborted', code: string, message: string): Generator<StreamChunk> {
+    if (this.finished) return
+    const close = this.closeOpen()
+    if (close) yield close
+    yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+    yield {
+      type: 'finish',
+      reason:
+        kind === 'error'
+          ? { kind: 'error', failure: { message, code } }
+          : { kind: 'aborted', failure: { message, code } },
+    };
+    this.finished = true
+  }
+}

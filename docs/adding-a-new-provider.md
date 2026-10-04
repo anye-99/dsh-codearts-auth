@@ -474,6 +474,34 @@ export const CREDITS_CAPABILITIES = Object.freeze({
 - 在项目 `README.md` 的「工作方式」和「Provider」章节补充新 provider
 - 如有特殊坑点（如 LobsterAI 的 `X-LobsterAI-Client-Capabilities` 头），在 AGENTS.md 中记录
 
+### 路线 C：非凭据型面板（路径 B 的变体）
+
+**已有实例**：`antigravity`（第 14 个面板）—— 凭据由官方二进制持有、
+一个账号 = 一个隔离 HOME 目录、账号池住插件自有文档（`~/.dsh/agy-accounts/pool.json`）。
+路径 A/B 的共同前提在这里**都不成立**：
+
+| 常规硬契约 | 非凭据型面板的事实 |
+|---|---|
+| 凭据存 `ctx.credentials`，结构含 `access_token` | 官方二进制自管凭据，本插件从不读写 |
+| 一个账号 = 一份凭据 | 一个账号 = 一个隔离目录（或真实系统 HOME 的槽位） |
+| 登录 = 返回 loginUrl 后轮询服务端回调 | PKCE + loopback 自动捕获，失败降级人工粘码 |
+| 静默续期由本插件发起 | 官方二进制自续期，本插件只读配额 |
+| 有积分余额 / 每日签到 | 没有；有的是按 family 分组的滚动配额（双窗） |
+
+⇒ 与 A/B 的**一致面**（必须做全，接入方案「范围 A」的清单）：
+产品配置单一真相源（`xxx-product.ts`）、服务实例作 `registerJetHubRpc`
+**位置参数**传入（不用模块级 holder）、账号动作走**标准动词**并在各 case 内
+按 provider 分派、`refreshTargets` 调度表有位、能力矩阵显式登记、客户端复用
+共享 `AccountCard`（agy 专属区块以 prop 注入，不得反向 import 造成循环）。
+
+⇒ **刻意缺席**面（结构性差别的如实表达，用例双向钉死）：
+不进 `REF_PREFIX_TO_PROVIDER`（恢复逻辑造不出指向空气的账号）、不进备份、
+卡片不渲染凭据/有效期行。「标准动词覆盖不到的少数动作」（粘码/开终端/取号
+模式/设主号/代理）才允许走 `xxx.*` 扩展动词，且每个都必须注明无标准对应物的理由。
+
+实现与事故记录：`docs/antigravity-jet-hub-integration-plan.md`、AGENTS.md
+「Antigravity 接入维护要点」。
+
 ---
 
 ## 通用检查清单

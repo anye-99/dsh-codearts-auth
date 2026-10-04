@@ -62,6 +62,88 @@ const STYLES = `
  * 故容器保持透明（加白底反而会出现一圈突兀的方块）。
  */
 .dim-jh-providerIcon.zcode { background: transparent; }
+/*
+ * Antigravity（Google）：SVG 自带蓝紫渐变圆角底 + 白色上升体，同 zcode ——
+ * 完整图形，容器保持透明，加白底会多出一圈白边。
+ */
+.dim-jh-providerIcon.antigravity { background: transparent; }
+
+/* ── Antigravity 面板（第 14 个面板·非凭据型，见 antigravity-panel.js）── */
+/*
+ * 2026-10-02 对齐后，账号列表**复用共享的 .dim-jh-accountCard**（与其余 13 家
+ * 同一张卡）；这里只剩 agy 专属区块的样式（登录流 / 取号模式 / family 配额 /
+ * 卡片扩展区）。
+ *
+ * 2026-10-04 间距体系对齐（与其他 13 个面板一致）：原先 .dim-jh-agy 是
+ * display: grid + gap: 12px，但共享的 .dim-jh-panelHead（margin-bottom 16px）
+ * 与 .dim-jh-probeNotice（margin-bottom 12px）的 margin 在 grid 容器里**不塌陷**，
+ * 与 gap 叠加成 24~28px 的双重间距，节奏与 ProviderPanel 明显不同。现改为普通
+ * 块流 —— 区块间距完全交给共享 margin 体系；同时删除独立账号卡 / 只读模型列表 /
+ * toast 时代遗留的死样式（dim-jh-agy-absent / head* / dormant / mode /
+ * models* / toast* / cardWrap / cardActions / quotaWrap / add）—— 删掉的类会
+ * 一直误导下一个读的人。
+ */
+.dim-jh-agy { min-width: 0; }
+
+.dim-jh-agy-settingsCard { display: grid; gap: 10px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--dsw-alias-border-l2, #eef0f3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); }
+.dim-jh-agy-metaRow { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; font-size: 13px; }
+.dim-jh-agy-metaLeft { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.dim-jh-agy-controlsRow { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.dim-jh-agy-controlGroup { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dim-jh-agy-controlLabel { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary, #646a73); }
+
+.dim-jh-btn[data-active="true"] { border-color: #1677ff; color: #1677ff; background: color-mix(in srgb, #1677ff 10%, var(--dsw-alias-bg-layer-3, #fff)); font-weight: 600; }
+.dim-jh-btn-danger { color: var(--dsw-text-error, #d54941); }
+.dim-jh-btn-danger:hover:not(:disabled) { border-color: var(--dsw-text-error, #d54941); }
+
+/*
+ * 登录弹窗与授权流程
+ */
+.dim-jh-agy-login { display: grid; gap: 10px; padding: 14px 16px; border: 1px solid var(--dsw-alias-border-l2, #eef0f3); border-radius: 12px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); }
+.dim-jh-agy-login h4 { margin: 0; font-size: 14px; }
+.dim-jh-agy-login p { margin: 0; line-height: 22px; font-size: 13px; color: var(--dsw-alias-label-secondary, #646a73); }
+.dim-jh-agy-login a { color: #1677ff; }
+.dim-jh-agy-qr { width: 200px; height: 200px; border-radius: 8px; background: white; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); margin: 4px 0; }
+.dim-jh-agy-loginRow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dim-jh-agy-loginRow input, .dim-jh-agy-formInput { flex: 1 1 200px; min-width: 0; padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; background: var(--dsw-alias-bg-layer-1, #fff); color: inherit; font-size: 13px; outline: none; }
+.dim-jh-agy-loginRow input:focus, .dim-jh-agy-formInput:focus { border-color: #1677ff; }
+.dim-jh-agy-loginModal { display: grid; gap: 14px; }
+.dim-jh-agy-formGroup { display: grid; gap: 6px; }
+.dim-jh-agy-formLabel { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary, #646a73); }
+
+.dim-jh-agy-cards { display: grid; gap: 10px; }
+.dim-jh-agy-cards .dim-jh-accountCard { margin-bottom: 0; }
+.dim-jh-agy-extra { display: grid; gap: 6px; margin-bottom: 6px; }
+.dim-jh-agy-cardHead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+
+.dim-jh-tag { padding: 1px 7px; border-radius: 999px; background: var(--dsw-fill-secondary, #f2f3f5); color: var(--dsw-alias-label-secondary, #4e5969); font-size: 12px; }
+.dim-jh-tag-primary { background: color-mix(in srgb, #1677ff 12%, #fff); color: #1677ff; font-weight: 500; }
+.dim-jh-agy-health { padding: 1px 7px; border-radius: 999px; font-size: 12px; }
+.dim-jh-agy-health-healthy { background: var(--dsw-success-light, #e8f8f2); color: var(--dsw-success-normal, #2ba471); }
+.dim-jh-agy-health-cooldown { background: var(--dsw-palette-orange-1, #fff7e8); color: var(--dsw-palette-orange-6, #d25f00); }
+.dim-jh-agy-health-auth_required { background: var(--dsw-error-light, #fdecea); color: var(--dsw-text-error, #d54941); }
+/* 已停用：与 unknown 的灰区分开 —— 它是用户主动动作的结果，用中性弱化而非「未知」。 */
+.dim-jh-agy-health-disabled { background: var(--dsw-fill-secondary, #f2f3f5); color: var(--dsw-alias-label-tertiary, #8f959e); }
+.dim-jh-agy-health-unknown { background: var(--dsw-fill-secondary, #f2f3f5); color: var(--dsw-alias-label-secondary, #4e5969); }
+
+/*
+ * 配额：一个 family 一行，行内并排放 5 小时窗口与本周窗口。
+ */
+.dim-jh-agy-quota { display: grid; gap: 4px; margin-top: 6px; padding: 8px 12px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eef0f3); }
+.dim-jh-agy-quotaRow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; font-size: 12px; line-height: 18px; }
+.dim-jh-agy-quotaFamily { min-width: 56px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-agy-quotaItem { display: inline-flex; align-items: baseline; gap: 4px; }
+.dim-jh-agy-quotaVal { font-family: var(--dsw-font-family-mono, monospace); font-weight: 600; color: #1677ff; }
+.dim-jh-agy-quota-empty { font-size: 12px; color: var(--dsw-alias-label-tertiary, #8f959e); padding: 4px 8px; }
+
+/*
+ * 弱化说明文字（dim-jh-hint）与紧凑按钮（dim-jh-btn-sm）。
+ * ⚠️ 此前 antigravity-panel.js 大量使用这两个类（配额重置提示 / 弹窗关闭按钮），
+ * 样式表却从未定义 —— 文字没有弱化色、按钮不缩小，与共享弹窗观感脱节。
+ * 挂在共享段而非 agy 段：它们是通用原语，其他面板后续也能用。
+ */
+.dim-jh-hint { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary, #8f959e); }
+.dim-jh-btn-sm { padding: 2px 10px; font-size: 11px; line-height: 16px; }
 
 /* provider 文案：align dsh-im .dim-channelCopy */
 .dim-jh-providerLabel { min-width: 0; display: grid; }
@@ -372,6 +454,50 @@ const STYLES = `
    很长,继承 td 的 nowrap + hidden 会把表格撑出横向滚动(参考实现的原坑)。 */
 .dim-jh-quotaTable tr[data-error="true"] td { color: var(--dsw-alias-state-error-primary, #d93025); }
 .dim-jh-quotaTable td.dim-jh-quotaError { font-size: 11.5px; line-height: 1.5; white-space: normal; overflow: visible; text-overflow: clip; word-break: break-word; }
+
+/* ── Doubao (豆包) 本地联动面板（方案 1 · 路线 C） ── */
+.dim-jh-doubao-panel { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 900px; padding: 4px 0 24px; box-sizing: border-box; }
+.dim-jh-doubao-banner { padding: 14px 18px; border-radius: 12px; background: var(--dsw-alias-bg-layer-2, #f5f8ff); border: 1px solid var(--dsw-alias-border-l2, #d8e5ff); }
+.dim-jh-doubao-bannerTitle { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.dim-jh-doubao-bannerTitle strong { font-size: 14px; color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-doubao-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: #e8f3ff; color: #1677ff; }
+.dim-jh-doubao-bannerDesc { margin: 0; font-size: 12px; line-height: 20px; color: var(--dsw-alias-label-secondary, #646a73); }
+.dim-jh-doubao-notice { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
+.dim-jh-doubao-notice-success { background: var(--dsw-success-light, #e8f8f2); color: var(--dsw-success-normal, #2ba471); border: 1px solid #b7ebd4; }
+.dim-jh-doubao-notice-error { background: var(--dsw-error-light, #fdecea); color: var(--dsw-text-error, #d54941); border: 1px solid #f9c2be; }
+.dim-jh-doubao-noticeText { flex: 1; }
+.dim-jh-doubao-noticeClose { background: none; border: none; font-size: 14px; cursor: pointer; color: inherit; padding: 0 4px; }
+.dim-jh-doubao-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.dim-jh-doubao-card { display: flex; flex-direction: column; padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1, #fff); border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); box-sizing: border-box; }
+.dim-jh-doubao-card-wide { grid-column: 1 / -1; }
+.dim-jh-doubao-cardHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.dim-jh-doubao-cardTitle { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-doubao-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+.dim-jh-doubao-badge-green { background: #e8f8f2; color: #2ba471; }
+.dim-jh-doubao-badge-gray { background: #f2f3f5; color: #8f959e; }
+.dim-jh-doubao-badge-orange { background: #fff7e8; color: #d25f00; }
+.dim-jh-doubao-badge-blue { background: #e8f3ff; color: #1677ff; }
+.dim-jh-doubao-cardBody { display: flex; flex-direction: column; gap: 8px; }
+.dim-jh-doubao-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 20px; }
+.dim-jh-doubao-label { color: var(--dsw-alias-label-secondary, #646a73); flex-shrink: 0; }
+.dim-jh-doubao-value { color: var(--dsw-alias-label-primary, #1f2329); font-weight: 500; text-align: right; }
+.dim-jh-doubao-path { font-family: var(--dsw-font-family-mono, monospace); font-size: 11px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dim-jh-doubao-uidBox { display: flex; flex-direction: column; gap: 6px; }
+.dim-jh-doubao-uidHero { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.dim-jh-doubao-uidLabel { color: var(--dsw-alias-label-secondary, #646a73); }
+.dim-jh-doubao-uidValue { font-family: var(--dsw-font-family-mono, monospace); font-size: 16px; color: #1677ff; letter-spacing: 0.5px; }
+.dim-jh-doubao-uidStatus { font-size: 11px; padding: 1px 6px; border-radius: 999px; }
+.dim-jh-doubao-emptyUid p { margin: 0 0 4px; font-size: 13px; color: var(--dsw-alias-label-secondary, #646a73); }
+.dim-jh-doubao-usersHistory { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--dsw-alias-border-l2, #dfe1e5); display: flex; align-items: center; gap: 8px; }
+.dim-jh-doubao-usersTags { display: flex; flex-wrap: wrap; gap: 6px; }
+.dim-jh-doubao-userTag { padding: 2px 7px; border-radius: 6px; background: #f2f3f5; font-size: 11px; font-family: var(--dsw-font-family-mono, monospace); color: #4e5969; }
+.dim-jh-doubao-userTag-active { background: #e8f3ff; color: #1677ff; font-weight: 600; }
+.dim-jh-doubao-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
+.dim-jh-doubao-launchBtn { min-width: 140px; }
+.dim-jh-doubao-advanced { margin-top: 6px; padding: 12px 14px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); }
+.dim-jh-doubao-inputGroup { display: flex; flex-direction: column; gap: 6px; }
+.dim-jh-doubao-inputRow { display: flex; gap: 8px; align-items: center; }
+.dim-jh-doubao-urlInput { flex: 1; min-width: 220px; font-family: var(--dsw-font-family-mono, monospace); font-size: 12px; }
 `
 
 let injected = false

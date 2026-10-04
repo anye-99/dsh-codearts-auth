@@ -31,6 +31,23 @@ import type { RaccoonAuth } from './raccoon-auth.js'
 import type { ZcodeAuth } from './zcode-auth.js'
 import { ZCODE } from './zcode-product.js'
 import type { ZcodeCredential } from './zcode.js'
+// ===== Antigravity（Google `agy` CLI，第 14 个面板·**非凭据型**）=====
+// 与其余 12 家的**结构性差异**：凭据由官方 `agy` 二进制持有
+// （macOS Keychain / Windows Credential Manager），一个账号 = 一个隔离 HOME 目录，
+// 账号池住 `~/.dsh/agy-accounts/pool.json`（协议层 `src/agy/`，装配 `agy-service.ts`）。
+// 因此它**不进** `ctx.credentials` / 本插件 `AccountPool`，也**刻意不在**
+// `REF_PREFIX_TO_PROVIDER`（恢复逻辑造不出指向空气的账号）。
+// RPC 与其余面板**同走标准动词**（`account.*` / `login.poll` / `model.*` /
+// `provider.*`），分派在各 case 内按 provider 分支到 `antigravity` 服务形参；
+// 只有无标准对应物的动作走 `antigravity.*` 扩展动词（开终端 / 设主号 / 选号模式 /
+// 代理 / 面板状态驱动 / 主账号登录 / 粘授权码）。服务**不再**经模块级 holder，
+// 而是与另外 13 个 auth 实例一样作 `registerJetHubRpc` 的位置参数传入。
+import { ANTIGRAVITY_FAMILY_ORDER, ANTIGRAVITY_PROVIDER_ID } from './antigravity-product.js'
+import type { AntigravityService } from './agy-service.js'
+import { DOUBAO_PROVIDER_ID } from './doubao-product.js'
+import type { DoubaoService } from './doubao-service.js'
+import type { ManagedAccount } from './agy/pool-types.js'
+import { modelFamilyOf, type ModelFamily } from './agy/pool-types.js'
 import type { RaccoonCredential } from './raccoon.js'
 import type { StartedRaccoonLoginFlow } from './raccoon-login-page.js'
 import { MINIMAX } from './minimax-product.js'
@@ -122,8 +139,10 @@ import type {
   RpcRefreshAccountResponse,
   RpcRetestAccountRequest,
   RpcRetestAllRequest,
+  RpcRetestResponse,
   RpcResetAccountRequest,
   RpcResetAllRequest,
+  RpcResetResponse,
   RpcCreditsStatusRequest,
   RpcCreditsStatusResponse,
   RpcCreditsClaimAllRequest,
@@ -666,6 +685,18 @@ export function registerJetHubRpc(
   minimax: MinimaxAuth,
   zcode: ZcodeAuth,
   /**
+   * Antigravity（Google `agy` CLI）服务实例。
+   *
+   * ⚠️ 第 14 个面板、**非凭据型**：凭据归官方 agy 二进制、账号是隔离 HOME 目录，
+   * 故没有 `AntigravityAuth` 凭据服务，而是装配层 `AntigravityService`（账号池 /
+   * 登录 / 配额 / 模型目录）。与其余 auth 实例同列位置参数（AGENTS.md
+   * 「位置参数陷阱」：新增占位必须 `grep -n 'registerJetHubRpc(' tests/` 全补齐）。
+   *
+   * 可选（`?`）：headless profile 与单测替身可省略 —— 等价于 agy 服务缺席，
+   * 各 antigravity 分支返回 `jet-hub/antigravity-unavailable` 规范错误，而不是抛错。
+   */
+  antigravity?: AntigravityService,
+  /**
    * provider → 适配器实例（可选）。
    *
    * 用于「显示列表」拿到**不受用户黑名单影响**的全量目录（`listAllModels`），
@@ -673,11 +704,13 @@ export function registerJetHubRpc(
    * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
    */
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  doubao?: DoubaoService,
 ): void {
   ctx.inject(['connection'], (connectionCtx) => {
     registerJetHubEndpoints(
       connectionCtx as Context, pool, codearts, buddy, workbuddy, lobsterai,
-      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, modelAdapters,
+      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, antigravity, modelAdapters,
+      doubao,
     )
   })
 }
@@ -689,6 +722,89 @@ export function registerJetHubRpc(
  */
 export interface ModelCatalogSource {
   listAllModels(): readonly { id: string; name: string; isFree?: boolean }[]
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Antigravity（非凭据型面板，自实现版）
+//
+// 账号/登录/配额/模型端点与其余 13 家一样走**标准动词**，在各 case 内按
+// provider 分派到 `registerJetHubEndpoints` 的 `antigravity` 形参
+// （`AntigravityService`，与另外 13 个 auth 实例同一位置参数契约）。
+// 账号池、凭据、模型目录全部由本仓库自实现：账号在
+// `~/.dsh/agy-accounts/pool.json`，凭据由官方 `agy` 二进制持有，模型黑名单
+// 由本插件的 `account-pool` 承载并被 `AntigravityAdapter.listModels` 真实
+// 套用 —— 早期「model/provider 开关对 antigravity 是假开关」的 gate 已删除，
+// 黑名单与启停现在**真实生效**。产品配置单一真相源：`antigravity-product.ts`。
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 把 `ManagedAccount`（agy 池条目）映射成 Jet Hub 账号卡片的通用形状。
+ *
+ * antigravity 的账号**不是**凭据型（没有 `credentialRef`/`access_token`），
+ * 而是「隔离 HOME 目录 + agy 二进制持有的登录态」。映射时填 Jet Hub 卡片
+ * 渲染真正消费的字段；凭据相关字段留空串，避免卡片上的「复制凭据」之类
+ * 动作误触发。
+ */
+function mapAgyAccount(a: ManagedAccount): Record<string, unknown> {
+  return {
+    id: a.id,
+    provider: ANTIGRAVITY_PROVIDER_ID,
+    alias: a.alias,
+    email: a.email ?? '',
+    credentialRef: '',
+    enabled: a.enabled,
+    createdAt: a.createdAt,
+    // 面板用这两个字段决定是否渲染「开终端」「隔离目录」动作。
+    accountDir: a.dir,
+    systemHome: a.systemHome === true,
+    proxyUrl: a.proxyUrl ?? '',
+    authRequired: a.authRequired === true,
+    authError: a.authError ?? '',
+    cooldowns: a.cooldowns,
+    quotas: a.quotas,
+    lastUsedAt: a.lastUsedAt ?? 0,
+    isPrimary: false, // 由调用方按 primaryAccountId 覆盖
+  }
+}
+
+/** antigravity 端点分派共用的「服务不可用」错误。 */
+function agyUnavailable(): { ok: false; error: { code: string; message: string } } {
+  return {
+    ok: false,
+    error: {
+      code: 'jet-hub/antigravity-unavailable',
+      message: 'Antigravity 服务未就绪（agy 二进制缺失或插件未加载）。请确认本机已安装 agy CLI。',
+    },
+  }
+}
+
+/**
+ * 取 antigravity 服务；缺失（undefined，headless / 单测替身未注入）时返回规范错误
+ * （由调用方直接 return）。服务实例由 `registerJetHubEndpoints` 的 `antigravity`
+ * 形参传入 —— 与其它 13 家 auth 实例同一位置参数契约，不用模块级 holder。
+ */
+function requireAgyService(svc: AntigravityService | undefined):
+  | { ok: true; svc: AntigravityService }
+  | { ok: false; error: { code: string; message: string } } {
+  if (!svc) return { ok: false, error: agyUnavailable().error }
+  return { ok: true, svc }
+}
+
+function doubaoUnavailable(): { ok: false; error: { code: string; message: string } } {
+  return {
+    ok: false,
+    error: {
+      code: 'jet-hub/doubao-unavailable',
+      message: 'Doubao 本地客户端探测服务未就绪。请确认在 Windows 环境下运行。',
+    },
+  }
+}
+
+function requireDoubaoService(svc: DoubaoService | undefined):
+  | { ok: true; svc: DoubaoService }
+  | { ok: false; error: { code: string; message: string } } {
+  if (!svc) return { ok: false, error: doubaoUnavailable().error }
+  return { ok: true, svc }
 }
 
 /**
@@ -770,7 +886,13 @@ function registerJetHubEndpoints(
   raccoon: RaccoonAuth,
   minimax: MinimaxAuth,
   zcode: ZcodeAuth,
+  /**
+   * Antigravity 装配服务（非凭据型面板：账号池/登录/配额/模型目录）。
+   * 可选：缺席时各 antigravity 分支回规范「不可用」错误。
+   */
+  antigravity?: AntigravityService,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  doubao?: DoubaoService,
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const connection = (ctx as any).connection ?? ctx.get('connection')
@@ -869,11 +991,82 @@ function registerJetHubEndpoints(
     },
   })
 
-  /** 分发端点方法到对应的处理器 */
+  /**
+   * 分发端点方法到对应的处理器。
+   *
+   * antigravity 的账号/登录/配额/模型端点在各 case 内按 provider 分派到
+   * `getAntigravityService()`（见文件头 Antigravity 注释块）。
+   */
   async function handleMethod(method: string, payload: unknown, _signal: AbortSignal): Promise<unknown> {
+    // ── 端点名归一（兼容旧客户端）──────────────────────────────────────────
+    // `cline.quota` / `cline.requestLog` 是 2026-10-02 泛化前的旧名 —— 当时
+    // 这两个端点**只认 Cline**；泛化为按 provider 分派后改名 `subscriptionQuota.*`
+    // （登记了 `subscriptionQuota` 能力位的 Cline / Antigravity 共用一条路径，
+    // 与 `qoderFamily` 注册表同一取向：平行 case 的数量与「漏接一处」的概率同向增长）。
+    // 旧客户端 bundle 的缓存/未刷新流量仍会打旧名，故这里映射而不是让它落
+    // `unknown method` —— 那会表现成「点了订阅额度按钮、弹窗报未知方法」。
+    if (method === 'cline.quota') return handleMethod('subscriptionQuota.get', payload, _signal)
+    if (method === 'cline.requestLog') return handleMethod('subscriptionQuota.requestLog', payload, _signal)
     switch (method) {
       case 'account.list': {
         const req = payload as RpcListAccountsRequest
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          const primaryId = got.svc.pool.getPoolData().primaryAccountId
+          const accounts = got.svc.pool.getAccounts().map((a) => ({
+            ...mapAgyAccount(a),
+            isPrimary: a.id === primaryId,
+          }))
+          return { ok: true, value: { accounts } }
+        }
+        if (req.provider === DOUBAO_PROVIDER_ID) {
+          const got = requireDoubaoService(doubao)
+          if (!got.ok) return { ok: false, error: got.error }
+          const status = await got.svc.probe()
+          const accounts: Record<string, unknown>[] = []
+          if (status.allUsers && status.allUsers.length > 0) {
+            for (const u of status.allUsers) {
+              const isCurrent = status.currentUser?.userId === u.userId
+              accounts.push({
+                id: `doubao-${u.userId}`,
+                provider: DOUBAO_PROVIDER_ID,
+                alias: `UID: ${u.userId}${isCurrent ? ' (当前)' : ''}`,
+                email: '',
+                credentialRef: '',
+                enabled: u.enable !== false,
+                createdAt: u.userActionTime ? Number(u.userActionTime) : Date.now(),
+                isPrimary: isCurrent,
+                doubaoStatus: status,
+              })
+            }
+          } else if (status.currentUser) {
+            accounts.push({
+              id: 'doubao-local',
+              provider: DOUBAO_PROVIDER_ID,
+              alias: `UID: ${status.currentUser.userId}`,
+              email: '',
+              credentialRef: '',
+              enabled: status.currentUser.enable !== false,
+              createdAt: status.currentUser.userActionTime ? Number(status.currentUser.userActionTime) : Date.now(),
+              isPrimary: true,
+              doubaoStatus: status,
+            })
+          } else if (status.installed) {
+            accounts.push({
+              id: 'doubao-local',
+              provider: DOUBAO_PROVIDER_ID,
+              alias: '本地桌面端 (未登录)',
+              email: '',
+              credentialRef: '',
+              enabled: false,
+              createdAt: Date.now(),
+              isPrimary: true,
+              doubaoStatus: status,
+            })
+          }
+          return { ok: true, value: { accounts } }
+        }
         const accounts = await pool.listAccounts(req.provider)
         return { ok: true, value: { accounts } }
       }
@@ -1374,6 +1567,64 @@ function registerJetHubEndpoints(
             void pool.removeAccount(id).catch(() => {})
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
+        } else if (provider === ANTIGRAVITY_PROVIDER_ID) {
+          /**
+           * Antigravity（**非凭据型**面板）与其余 provider 同为「两步式」，
+           * 但登录产物**不是可轮询的服务端凭据**，而是「PKCE + loopback 自动
+           * 捕获授权码」（宿主侧自动开浏览器；loopback 绑不上时降级为面板里
+           * **人工粘授权码 / 回调 URL**，走扩展动词 `antigravity.loginSubmitCode`）。
+           * `begin()` 一返回即给出 Google consent URL，收敛状态由前端经
+           * `login.poll` 观察 `poolAuth.status()`。
+           *
+           * ⚠️ **账号 id 用 `begin()` 返回的 stagingId**：agy 的账号条目要等
+           * 授权码换 token 成功后才 commit 进池（`commitStagingAccount`），
+           * 此前只有 staging 槽位 —— 故这里**不登记本插件账号池占位**（它不是
+           * 凭据型账号）。`accountId` 仅供 `login.poll` 关联本次流程。
+           *
+           * ⚠️ **主账号**（真实系统 HOME）登录**不走这里**（无 staging 槽位、
+           * 产物写进真实 HOME），走扩展动词 `antigravity.loginBeginPrimary`。
+           *
+           * ⚠️ 关闭方向同理走 `account.delete`（agy 池反查分派已接入）。
+           */
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          const alias = typeof (req as { alias?: unknown }).alias === 'string'
+            ? (req as { alias?: string }).alias
+            : undefined
+          const proxyUrl = typeof (req as { proxyUrl?: unknown }).proxyUrl === 'string'
+            ? (req as { proxyUrl?: string }).proxyUrl
+            : undefined
+          const started = await got.svc.poolAuth.begin(alias, proxyUrl)
+          // 后端生成 QR data URL（宿主侧有 qrcode 依赖，客户端 bundle 没有）。
+          let qrDataUrl: string | undefined
+          if (started.url) {
+            try {
+              const qrcode = (await import('qrcode')) as unknown as { toDataURL: (t: string, o?: { width?: number; margin?: number }) => Promise<string> }
+              qrDataUrl = await qrcode.toDataURL(started.url, { width: 220, margin: 1 })
+            } catch {
+              // QR 生成失败不阻塞登录（链接仍可点）
+            }
+          }
+          return {
+            ok: true,
+            value: {
+              // stagingId 在 commit 后会被真实账号 id 接替（poolAuth.status 可见）。
+              accountId: started.stagingId ?? id,
+              loginUrl: started.url ?? '',
+              qrDataUrl,
+            },
+          }
+        } else if (provider === DOUBAO_PROVIDER_ID) {
+          const got = requireDoubaoService(doubao)
+          if (!got.ok) return { ok: false, error: got.error }
+          await got.svc.launchClient()
+          return {
+            ok: true,
+            value: {
+              accountId: 'doubao-local',
+              loginUrl: '',
+            },
+          }
         } else {
           return { ok: false, error: { code: 'bad-request', message: `unknown provider: ${provider}` } }
         }
@@ -1381,12 +1632,37 @@ function registerJetHubEndpoints(
 
       case 'account.update': {
         const req = payload as RpcUpdateAccountRequest
+        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
+          return { ok: true, value: undefined }
+        }
+        // antigravity 账号不在本池：按 provider 分派到 agyService.pool。
+        // 反查 provider：agy 账号 id 形如 acc_*（无 provider- 前缀）。
+        const agyGot = requireAgyService(antigravity)
+        if (agyGot.ok && agyGot.svc.pool.getAccount(req.accountId)) {
+          const patch = req.patch as { enabled?: boolean; alias?: string } | undefined
+          if (patch && typeof patch.enabled === 'boolean') {
+            agyGot.svc.pool.setAccountEnabled(req.accountId, patch.enabled)
+          }
+          if (patch && typeof patch.alias === 'string' && patch.alias.trim() !== '') {
+            agyGot.svc.pool.setAccountAlias(req.accountId, patch.alias.trim())
+          }
+          return { ok: true, value: undefined }
+        }
         await pool.updateAccount(req.accountId, req.patch)
         return { ok: true, value: undefined }
       }
 
       case 'account.delete': {
         const req = payload as RpcDeleteAccountRequest
+        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
+          return { ok: true, value: undefined }
+        }
+        const agyGot2 = requireAgyService(antigravity)
+        if (agyGot2.ok && agyGot2.svc.pool.getAccount(req.accountId)) {
+          // 删除会连带清掉隔离 HOME 目录与其中的 agy 登录态（不可撤销）。
+          agyGot2.svc.pool.deleteAccount(req.accountId)
+          return { ok: true, value: undefined }
+        }
         await pool.removeAccount(req.accountId)
         return { ok: true, value: undefined }
       }
@@ -1400,6 +1676,20 @@ function registerJetHubEndpoints(
         }
         if (!Array.isArray(req.orderedIds) || req.orderedIds.some(id => typeof id !== 'string')) {
           return { ok: false, error: { code: 'bad-request', message: 'orderedIds 必须是字符串数组' } }
+        }
+        if (req.provider === DOUBAO_PROVIDER_ID) {
+          return { ok: true, value: undefined }
+        }
+        // antigravity：分派到 agyService.pool（它管 agy 账号的顺序）。
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          try {
+            got.svc.pool.reorderAccounts(req.orderedIds)
+          } catch (error) {
+            return { ok: false, error: { code: 'bad-request', message: error instanceof Error ? error.message : String(error) } }
+          }
+          return { ok: true, value: undefined }
         }
         try {
           await pool.reorderAccounts(req.provider, req.orderedIds)
@@ -1420,6 +1710,23 @@ function registerJetHubEndpoints(
       case 'account.refresh': {
         const req = payload as RpcRefreshAccountRequest
         try {
+          // doubao：非凭据型本地客户端，探测刷新状态与 UID
+          const doubaoGot = requireDoubaoService(doubao)
+          if (doubaoGot.ok && (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-') || (req as { provider?: string }).provider === DOUBAO_PROVIDER_ID)) {
+            await doubaoGot.svc.probe(true)
+            return { ok: true, value: { success: true } satisfies RpcRefreshAccountResponse }
+          }
+          // antigravity：账号不在本插件池（非凭据型：凭据归官方 agy 二进制、
+          // 账号是隔离 HOME），先反查 agy 池分派。判据与 account.update/delete
+          // 一致（按 id 反查，不写死字面量 provider 分支）。
+          const agyGot = requireAgyService(antigravity)
+          if (agyGot.ok && agyGot.svc.pool.getAccount(req.accountId)) {
+            // ⚠️ 「刷新」语义重定义：其余 provider 是**续期凭据**，agy 的凭据
+            // 由官方二进制自续期 —— 这里做**登录态真探 + 配额刷新**
+            // （语义与对面 plan §7 坑 5 一致）。
+            await agyGot.svc.refreshAccount(req.accountId)
+            return { ok: true, value: { success: true } satisfies RpcRefreshAccountResponse }
+          }
           const accounts = await pool.listAllAccounts()
           const entry = accounts.find((a) => a.id === req.accountId)
           if (!entry) throw new Error(`Account ${req.accountId} not found`)
@@ -1512,6 +1819,50 @@ function registerJetHubEndpoints(
 
       case 'login.poll': {
         const req = payload as RpcPollLoginRequest
+        // antigravity：登录产物**不是凭据**（非凭据型面板），而是 poolAuth
+        // 流程状态（PKCE + loopback 自动捕获 / 手动粘码）。把它的状态机
+        // 归一成标准 `done/success/error` 形状，另附 agy 专属字段（phase/url）。
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const agyGot = requireAgyService(antigravity)
+          if (!agyGot.ok) return { ok: true, value: { done: false } }
+          const st = agyGot.svc.poolAuthStatus()
+          // 无活动流程（或轮询的是别的账号）：如实返回未完成。
+          if (st.phase === 'idle') {
+            return { ok: true, value: { done: false, phase: 'idle' } satisfies RpcPollLoginResponse }
+          }
+          return {
+            ok: true,
+            value: {
+              done: st.phase === 'done',
+              success: st.phase === 'done',
+              error: st.phase === 'failed' ? (st.code ?? 'login failed') : undefined,
+              phase: st.phase,
+              url: st.url,
+              code: st.code,
+            } satisfies RpcPollLoginResponse,
+          }
+        }
+        if (req.provider === DOUBAO_PROVIDER_ID) {
+          const got = requireDoubaoService(doubao)
+          if (!got.ok) return { ok: true, value: { done: false } satisfies RpcPollLoginResponse }
+          const status = await got.svc.probe(true)
+          if (status.currentUser) {
+            return {
+              ok: true,
+              value: {
+                done: true,
+                success: true,
+              } satisfies RpcPollLoginResponse,
+            }
+          }
+          return {
+            ok: true,
+            value: {
+              done: false,
+              success: false,
+            } satisfies RpcPollLoginResponse,
+          }
+        }
         const accounts = await pool.listAllAccounts()
         const entry = accounts.find((a) => a.id === req.accountId)
         if (!entry) return { ok: true, value: { done: false } }
@@ -1596,6 +1947,253 @@ function registerJetHubEndpoints(
               done: false,
               error: error instanceof Error ? error.message : String(error),
             } satisfies RpcSubmitSmsResponse,
+          }
+        }
+      }
+
+      // ── Antigravity 扩展动词（`antigravity.*`）───────────────────────────
+      // 与标准动词的边界：其余 13 家也有的能力（账号增删改查 / 排序 / 刷新 /
+      // 重测 / 重置 / 登录发起 / 登录轮询 / 模型开关 / 供应商开关）一律走
+      // **标准动词**（分派在各 case 内按 provider 分支到 `antigravity` 形参）；
+      // 本命名空间只保留**无标准对应物**的 agy 专属动作。
+      //
+      // 演进记录：原 `agy.loginBegin` 已吸收进 `account.create` 的 antigravity
+      // 分支；原 `agy.refreshQuota` / `agy.clearCooldown` 已分别吸收进
+      // `account.retest*` / `account.reset*`。改名 `agy.*` → `antigravity.*`
+      // 与 provider id / 服务名一致，消除「agy 是二进制名、antigravity 才是
+      // provider id」的阅读歧义。
+      //
+      // 主账号（系统 HOME）登录。⚠️ 2026-10-02 用户报障「模型列表里没有」的
+      // 根因之一：池里只有 primary 时，面板原先只有「+ 新增账号」（走 begin()
+      // 建隔离副账号），**没有入口登录主账号** —— 未登录 ⇒ 登录门控隐藏模型
+      // 分组 ⇒ 用户既看不到模型也找不到登录按钮，死循环。beginPrimary 把
+      // token 写进真实 HOME（pool-auth.ts:175），官方 agy 直接认。
+      case 'antigravity.loginBeginPrimary': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { proxyUrl?: unknown }
+        // 代理回落到主账号已存的 proxyUrl：换码 / 取 email 都要直连 Google，
+        // 无代理环境必然超时（见 pool-auth.beginPrimary 注释）。
+        const primaryAcc = got.svc.pool.getAccounts().find((a) => a.systemHome) ?? got.svc.pool.getAccounts()[0]
+        const proxyUrl = typeof body.proxyUrl === 'string' && body.proxyUrl !== ''
+          ? body.proxyUrl
+          : primaryAcc?.proxyUrl
+        const status = await got.svc.poolAuth.beginPrimary(proxyUrl)
+        let qrDataUrl: string | undefined
+        if (status.url) {
+          try {
+            const qrcode = (await import('qrcode')) as unknown as { toDataURL: (t: string, o?: { width?: number; margin?: number }) => Promise<string> }
+            qrDataUrl = await qrcode.toDataURL(status.url, { width: 220, margin: 1 })
+          } catch {
+            // QR 生成失败不阻塞登录（链接仍可点）
+          }
+        }
+        const { ok: _ok, dir: _dir, ...rest } = status
+        void _ok; void _dir
+        return { ok: true, value: { ...rest, qrDataUrl } }
+      }
+
+      // 模型目录**快照**端点（原 `antigravity.models`）已于 2026-10-02 对齐时
+      // **删除**：面板的模型列表改用共享 `ModelListPanel`（标准 `model.list`）。
+      // 那条路径的目录取 `modelAdapters.antigravity.listAllModels()`（不套门控、
+      // 不套黑名单），门控只影响对话框选择器 —— 信息性列表在 `model.list` 里
+      // 本来就是全量，再留一个端点就是同一件事的两套表达（死配置）。
+      case 'antigravity.loginSubmitCode': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { code?: unknown }
+        if (typeof body.code !== 'string' || body.code.trim() === '') {
+          return { ok: false, error: { code: 'bad-request', message: 'code 必填' } }
+        }
+        const status = await got.svc.poolAuth.submitCode(body.code)
+        // 登录成功 ⇒ 三件事一起破缓存，否则用户要等最长一分钟才看到变化：
+        // 1. 模型目录负缓存（未登录期间 refresh 失败落了 failedAt）；
+        // 2. 登录态 60s 缓存（force 真探，把 signed-out 翻成 ok）；
+        // 3. 广播目录变更 —— 适配器的登录门控翻转靠它触发选择器重读，
+        //    不广播的话"登录成功了但模型列表还是空的"会持续到下次手动刷新。
+        if (status.phase === 'done') {
+          void got.svc.catalog.forceRefresh().catch(() => undefined)
+          void got.svc.probeAuthStatus().catch(() => undefined)
+          broadcastCatalogChanged(ctx)
+        }
+        const { ok: _ok, ...rest } = status
+        void _ok
+        return { ok: true, value: rest }
+      }
+
+      case 'antigravity.loginCancel': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const status = await got.svc.poolAuth.cancel()
+        const { ok: _ok, ...rest } = status
+        void _ok
+        return { ok: true, value: rest }
+      }
+
+      // 设置主账号 / 取号模式 / 单账号代理。
+      case 'antigravity.setPrimary': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { accountId?: unknown }
+        if (typeof body.accountId !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'accountId 必填' } }
+        }
+        got.svc.pool.setPrimaryAccount(body.accountId)
+        return { ok: true, value: { pool: got.svc.pool.getPoolData() } }
+      }
+
+      case 'antigravity.setMode': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { mode?: unknown }
+        if (body.mode !== 'sequential' && body.mode !== 'round-robin') {
+          return { ok: false, error: { code: 'bad-request', message: 'mode 必须是 sequential 或 round-robin' } }
+        }
+        got.svc.pool.setMode(body.mode)
+        return { ok: true, value: { pool: got.svc.pool.getPoolData() } }
+      }
+
+      case 'antigravity.setProxy': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { accountId?: unknown; proxyUrl?: unknown }
+        if (typeof body.accountId !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'accountId 必填' } }
+        }
+        got.svc.pool.setAccountProxy(body.accountId, typeof body.proxyUrl === 'string' ? body.proxyUrl : undefined)
+        return { ok: true, value: { pool: got.svc.pool.getPoolData() } }
+      }
+
+      // antigravity 整体状态：**只读内存快照，毫秒级返回**。
+      //
+      // ⚠️ 这里**不 await** 登录探针与模型目录发现：未登录时 `agy models`
+      // 会挂到 watchdog（实测 ~15.7s）才被杀，若 status 等它们，面板首帧
+      // 必然卡 15s+，且 5s 轮询会叠出常驻挂起子进程（用户报障：界面一直
+      // 停在「正在读取 Antigravity 状态…」）。慢探针走独立端点
+      // `antigravity.probe`（面板「刷新」按钮），轮询只拿快字段。
+      case 'antigravity.status': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const cat = got.svc.catalog.get()
+        return {
+          ok: true,
+          value: {
+            bin: got.svc.agyBin,
+            version: got.svc.agyVersion,
+            dormantReason: got.svc.dormant,
+            enabled: got.svc.dormant === null,
+            // 同步的内存登录态（idle/pending/ok/…）；真实探针结果由 agy.probe 回填。
+            auth: got.svc.auth.status(),
+            poolAuth: got.svc.poolAuthStatus(),
+            pool: got.svc.pool.getPoolData(),
+            catalog: { source: cat.source, count: cat.models.length, lastError: cat.lastError ?? null },
+            // 面板级设置：默认思考档位（空串 = 跟随适配器阶梯）与合法档位列表。
+            defaultEffort: got.svc.config.defaultEffort,
+            efforts: [...got.svc.efforts],
+          },
+        }
+      }
+
+      /**
+       * 设置默认思考档位（面板开关，2026-10-03 用户要求）。
+       *
+       * 只影响**模型目录未钉死档位**时的兜底值；用户在模型选择器里选的档位
+       * （`options.reasoningEffort`）始终优先。空串 = 取消覆盖、跟随模型默认。
+       */
+      case 'antigravity.setDefaultEffort': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { effort?: unknown }
+        if (typeof body.effort !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'effort 必须是字符串（空串表示跟随模型默认）' } }
+        }
+        // 白名单在服务里校验并落盘；越界值被净化成空串，绝不会发给 agy。
+        const value = got.svc.setDefaultEffort(body.effort)
+        // 档位进入模型目录播报（`resolveModel().reasoning.defaultEffort`）⇒
+        // 广播让模型选择器重读，否则改了界面上还显示旧默认档（与黑名单变更
+        // 必须广播是同一条理由，见 broadcastCatalogChanged）。
+        broadcastCatalogChanged(ctx)
+        return { ok: true, value }
+      }
+
+      // 慢探针：登录态真探（spawn `agy models`）+ 模型目录发现。
+      // 面板「刷新」按钮与登录成功后调用；轮询**不**走这里。
+      case 'antigravity.probe': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const [auth, catalog] = await Promise.all([
+          got.svc.probeAuthStatus().catch(() => null),
+          got.svc.modelCatalog().catch(() => null),
+        ])
+        return {
+          ok: true,
+          value: {
+            auth,
+            catalog: catalog
+              ? { source: catalog.source, count: catalog.models.length, lastError: catalog.lastError ?? null }
+              : null,
+            pool: got.svc.pool.getPoolData(),
+          },
+        }
+      }
+
+      case 'antigravity.openTerminal': {
+        const got = requireAgyService(antigravity)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { accountId?: unknown }
+        if (typeof body.accountId !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'accountId 必填' } }
+        }
+        const acc = got.svc.pool.getAccount(body.accountId)
+        if (!acc || !acc.dir) {
+          return { ok: false, error: { code: 'bad-request', message: '该账号没有隔离目录（主账号用真实系统 HOME）' } }
+        }
+        // 复用对面的跨平台终端拉起（agoscript / cmd / x-terminal）。
+        const { spawn } = await import('node:child_process')
+        const { isolatedHomeEnv } = await import('./agy/runner.js')
+        const dir = acc.dir
+        if (process.platform === 'darwin') {
+          const script = `tell application "Terminal" to activate\ntell application "Terminal" to do script "export HOME='${dir}'; agy"`
+          spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref()
+        } else if (process.platform === 'win32') {
+          spawn('cmd.exe', ['/c', 'start', 'cmd.exe', '/k', `set "HOME=${dir}" && set "USERPROFILE=${dir}" && agy`], { windowsHide: true, detached: true, stdio: 'ignore' }).unref()
+        } else {
+          spawn('x-terminal-emulator', ['-e', `sh -c "export HOME='${dir}'; agy; exec sh"`], { detached: true, stdio: 'ignore' }).unref()
+        }
+        void isolatedHomeEnv
+        return { ok: true, value: { ok: true } }
+      }
+
+      // ===== 豆包客户端控制面（方案 1 · 路线 C：非凭据型本地客户端探测与唤醒） =====
+      case 'doubao.status': {
+        const got = requireDoubaoService(doubao)
+        if (!got.ok) return { ok: false, error: got.error }
+        const status = got.svc.getStatus()
+        return { ok: true, value: status }
+      }
+
+      case 'doubao.probe': {
+        const got = requireDoubaoService(doubao)
+        if (!got.ok) return { ok: false, error: got.error }
+        const status = await got.svc.probe(true)
+        return { ok: true, value: status }
+      }
+
+      case 'doubao.launch': {
+        const got = requireDoubaoService(doubao)
+        if (!got.ok) return { ok: false, error: got.error }
+        const body = (payload ?? {}) as { url?: unknown }
+        const targetUrl = typeof body.url === 'string' && body.url.trim() ? body.url.trim() : undefined
+        try {
+          const res = await got.svc.launchClient(targetUrl)
+          return { ok: true, value: res }
+        } catch (err) {
+          return {
+            ok: false,
+            error: {
+              code: 'jet-hub/doubao-launch-failed',
+              message: err instanceof Error ? err.message : String(err),
+            },
           }
         }
       }
@@ -1798,6 +2396,34 @@ function registerJetHubEndpoints(
       // 重测发一次最小对话请求：正常返回才清除标记，仍受限则保留并回报原因。
       case 'account.retest': {
         const req = payload as RpcRetestAccountRequest
+        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
+          const doubaoGot = requireDoubaoService(doubao)
+          if (doubaoGot.ok) {
+            await doubaoGot.svc.probe(true)
+          }
+          return {
+            ok: true,
+            value: {
+              accounts: [{ accountId: req.accountId, tested: 0, cleared: [], stillLimited: [] }],
+              clearedCount: 0,
+            } satisfies RpcRetestResponse,
+          }
+        }
+        // antigravity：账号在 agy 池（非凭据型）。「重测」= 对该账号发一次真实
+        // 的强制配额刷新（HTTPS 配额查询验证账号仍可用），语义与其余 provider
+        // 「发探测消息验证限流标记」同族；ProbeAccountResult 形状对齐。
+        const agyGot = requireAgyService(antigravity)
+        if (agyGot.ok && agyGot.svc.pool.getAccount(req.accountId)) {
+          const acc = agyGot.svc.pool.getAccount(req.accountId)!
+          await agyGot.svc.quota.refreshAccountQuota(acc, true)
+          return {
+            ok: true,
+            value: {
+              accounts: [{ accountId: req.accountId, tested: 0, cleared: [], stillLimited: [] }],
+              clearedCount: 0,
+            } satisfies RpcRetestResponse,
+          }
+        }
         const account = await retestAccount(pool, req.accountId)
         return {
           ok: true,
@@ -1809,6 +2435,32 @@ function registerJetHubEndpoints(
       // 停用账号也能重测（停用只影响自动选择，不影响手动排查）。
       case 'account.retestAll': {
         const req = payload as RpcRetestAllRequest
+        if (req.provider === DOUBAO_PROVIDER_ID) {
+          const doubaoGot = requireDoubaoService(doubao)
+          if (doubaoGot.ok) {
+            await doubaoGot.svc.probe(true)
+          }
+          return {
+            ok: true,
+            value: {
+              accounts: [{ accountId: 'doubao-local', tested: 0, cleared: [], stillLimited: [] }],
+              clearedCount: 0,
+            } satisfies RpcRetestResponse,
+          }
+        }
+        // antigravity：对全部账号（**含已停用**，与其余 provider 同约定）做强制配额刷新。
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          await got.svc.quota.refreshAllQuotas(true)
+          const accounts = got.svc.pool.getAccounts().map((a) => ({
+            accountId: a.id, tested: 0, cleared: [], stillLimited: [],
+          }))
+          return {
+            ok: true,
+            value: { accounts, clearedCount: 0 } satisfies RpcRetestResponse,
+          }
+        }
         const value = await retestAllAccounts(pool, req.provider)
         return { ok: true, value }
       }
@@ -1816,12 +2468,49 @@ function registerJetHubEndpoints(
       // ── 限流标记：重置（不发请求，直接清除）──
       case 'account.reset': {
         const req = payload as RpcResetAccountRequest
+        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
+          return {
+            ok: true,
+            value: { clearedCount: 0, accountCount: 1 } satisfies RpcResetResponse,
+          }
+        }
+        // antigravity：清该账号的限流冷却（agy 池按 family 记 cooldown）。
+        const agyGot = requireAgyService(antigravity)
+        if (agyGot.ok && agyGot.svc.pool.getAccount(req.accountId)) {
+          const acc = agyGot.svc.pool.getAccount(req.accountId)!
+          const cleared = acc.cooldowns ? Object.keys(acc.cooldowns).length : 0
+          agyGot.svc.pool.clearCooldown(req.accountId, undefined)
+          return {
+            ok: true,
+            value: { clearedCount: cleared, accountCount: 1 } satisfies RpcResetResponse,
+          }
+        }
         const value = await resetAccount(pool, req.accountId)
         return { ok: true, value }
       }
 
       case 'account.resetAll': {
         const req = payload as RpcResetAllRequest
+        if (req.provider === DOUBAO_PROVIDER_ID) {
+          return {
+            ok: true,
+            value: { clearedCount: 0, accountCount: 1 } satisfies RpcResetResponse,
+          }
+        }
+        // antigravity：清全部账号的限流冷却。
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          let cleared = 0
+          for (const acc of got.svc.pool.getAccounts()) {
+            cleared += acc.cooldowns ? Object.keys(acc.cooldowns).length : 0
+          }
+          got.svc.pool.clearCooldown(undefined, undefined)
+          return {
+            ok: true,
+            value: { clearedCount: cleared, accountCount: got.svc.pool.getAccounts().length } satisfies RpcResetResponse,
+          }
+        }
         const value = await resetAllAccounts(pool, req.provider)
         return { ok: true, value }
       }
@@ -2501,20 +3190,68 @@ function registerJetHubEndpoints(
         }
       }
 
-      // ── Cline「订阅额度」：官方额度窗口 + 请求记录 ──
+      // ── 订阅额度（`subscriptionQuota.*`）：官方额度窗口 + 请求记录 ──
       //
-      // 参考实现：`github.com/codeOct/dsh-cline-pass` 的额度管理与请求记录部分。
-      // 两者都用 Cline 网关自己的端点（不是本地记账），故与「余额」是三份
-      // 互不相同的读数：余额答「还剩多少」，额度答「各时间窗用掉百分之几」，
-      // 请求记录答「每一笔花了多少」。
+      // 语义（答「各时间窗用掉百分之几」，与「余额」「请求记录」是三份互不
+      // 相同的读数）。两个登记了 `subscriptionQuota` 能力位的 provider：
       //
-      // ⚠️ **两个端点都只认 Cline**（额度端点路径里的 `users/me` 与请求记录的
-      // `usages` 都是 Cline 网关的形状）。别的 provider 一律 `bad-request` ——
-      // 这正是「不要在 UI 上吞掉错误，而是不发起这个请求」那条既有约定的
-      // 服务端一半（客户端另由 `supportsSubscriptionQuota` 门控）。
-      case 'cline.quota': {
+      // - **cline**：Cline 网关自己的端点（`/users/me/plan/usage-limits`，
+      //   参考实现 `github.com/codeOct/dsh-cline-pass`），窗口形状由网关下发；
+      // - **antigravity**（非凭据型）：family 配额数据**已随 agy 账号条目缓存**
+      //   （`ManagedAccount.quotas`，5h 滚动 + weekly 双窗，按 google/anthropic/
+      //   openai 分组），这里只做形状映射、不发网络请求。
+      //
+      // ⚠️ 别的 provider 一律 `bad-request` —— 这正是「不要在 UI 上吞掉错误，
+      // 而是不发起这个请求」那条既有约定的服务端一半（客户端另由
+      // `supportsSubscriptionQuota` 门控）。
+      case 'subscriptionQuota.get': {
         const req = payload as RpcClineQuotaRequest
-        if (typeof req.provider !== 'string' || req.provider !== CLINE.id) {
+        if (typeof req.provider !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'provider 必填' } }
+        }
+        // ── antigravity：family 双窗 → 标准窗口形状 ──
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const got = requireAgyService(antigravity)
+          if (!got.ok) return { ok: false, error: got.error }
+          const values: RpcClineQuotaResponse['accounts'] = []
+          for (const account of got.svc.pool.getAccounts()) {
+            const windows: Array<{ type: string; percentUsed: number; resetsAt: string }> = []
+            for (const family of ANTIGRAVITY_FAMILY_ORDER) {
+              // 能力矩阵登记三家 family（`antigravity-product.ts`）；agy 的 quotas
+              // 按 ModelFamily 键控（含 unknown，不在展示序里）。
+              const q = account.quotas?.[family as ModelFamily]
+              if (!q) continue
+              // ⚠️ 量纲换算：agy 给的是**剩余**比例（remainingFraction），
+              // 标准窗口是**已用**百分比（percentUsed）。缺失（未查询过）的窗口
+              // **如实跳过**，绝不显示 0%（那会误读成「额度已满」）。
+              if (typeof q.remainingFraction === 'number') {
+                windows.push({
+                  type: `${family}:5h`,
+                  percentUsed: Math.round((1 - q.remainingFraction) * 100),
+                  // 无重置时刻给空串 —— 与 Cline 网关的既有约定一致（面板
+                  // `quotaResetsIn` 对空串显示「—」）。
+                  resetsAt: q.resetTime ?? '',
+                })
+              }
+              if (typeof q.weeklyFraction === 'number') {
+                windows.push({
+                  type: `${family}:weekly`,
+                  percentUsed: Math.round((1 - q.weeklyFraction) * 100),
+                  resetsAt: q.weeklyResetTime ?? '',
+                })
+              }
+            }
+            values.push({
+              accountId: account.id,
+              nickname: account.email ?? account.alias,
+              ok: true,
+              windows,
+            })
+          }
+          return { ok: true, value: { accounts: values } satisfies RpcClineQuotaResponse }
+        }
+        // ── cline：网关实时查询 ──
+        if (req.provider !== CLINE.id) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${String(req.provider)}` } }
         }
         const accounts = await pool.listAccounts(req.provider)
@@ -2552,9 +3289,24 @@ function registerJetHubEndpoints(
         return { ok: true, value: { accounts: values } satisfies RpcClineQuotaResponse }
       }
 
-      case 'cline.requestLog': {
+      case 'subscriptionQuota.requestLog': {
         const req = payload as RpcClineRequestLogRequest
-        if (typeof req.provider !== 'string' || req.provider !== CLINE.id) {
+        if (typeof req.provider !== 'string') {
+          return { ok: false, error: { code: 'bad-request', message: 'provider 必填' } }
+        }
+        // antigravity **不提供逐笔请求记录**（官方网关无此数据）——如实返回
+        // 空表 + 说明，而不是渲染一个「永远加载中」的假列表（与 credits.status
+        // 对无签到渠道「如实返回 null」同一准则）。
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          return {
+            ok: true,
+            value: {
+              rows: [],
+              note: 'Antigravity 官方网关不提供逐笔请求记录；上方额度窗口为该账号的实时配额读数。',
+            } satisfies RpcClineRequestLogResponse,
+          }
+        }
+        if (req.provider !== CLINE.id) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${String(req.provider)}` } }
         }
         if (typeof req.accountId !== 'string' || req.accountId.trim().length === 0) {
@@ -2833,15 +3585,53 @@ function registerJetHubEndpoints(
               if (disabledMap[model.id] === true) disabled++
             }
           }
-          const entries = pool.listAccountsByProvider(provider)
-          statuses[provider] = {
-            models: { total, disabled },
-            accounts: {
+          /**
+           * 账号计数。
+           *
+           * Antigravity **不在本插件的账号池里**（本池是凭据型 ref 账号），
+           * 它的账号是隔离 HOME 目录、由本仓库自实现的 `AntigravityService`
+           * 管理（`~/.dsh/agy-accounts/pool.json`）。直接读该服务的 pool。
+           */
+          let accountStats: { total: number; enabled: number }
+          if (provider === ANTIGRAVITY_PROVIDER_ID) {
+            const got = requireAgyService(antigravity)
+            if (got.ok) {
+              const accs = got.svc.pool.getAccounts()
+              accountStats = {
+                total: accs.length,
+                enabled: accs.filter((a) => a.enabled).length,
+              }
+            } else {
+              accountStats = { total: 0, enabled: 0 }
+            }
+          } else if (provider === DOUBAO_PROVIDER_ID) {
+            const got = requireDoubaoService(doubao)
+            if (got.ok) {
+              const status = got.svc.getStatus()
+              const count = status.allUsers?.length || (status.currentUser ? 1 : (status.installed ? 1 : 0))
+              accountStats = {
+                total: count,
+                enabled: count > 0 && status.currentUser?.enable !== false ? count : 0,
+              }
+            } else {
+              accountStats = { total: 0, enabled: 0 }
+            }
+          } else {
+            const entries = pool.listAccountsByProvider(provider)
+            accountStats = {
               total: entries.length,
               // 与适配器一致的判据：`enabled !== false` 视为启用
               //（老文档可能缺该字段，缺省语义等同启用）。
               enabled: entries.filter((entry) => entry.enabled !== false).length,
-            },
+            }
+          }
+          statuses[provider] = {
+            // antigravity 的模型目录来自 `modelAdapters.antigravity.listAllModels()`
+            // （本仓库 `AntigravityAdapter`，不受黑名单影响的全量目录）。
+            // 与账号数一样，黑名单/启停现在都真实生效 —— 早期「故意 total=0
+            // 以禁用供应商开关」的做法随自实现移除（开关已真）。
+            models: { total, disabled },
+            accounts: accountStats,
             closed: total > 0 && disabled === total,
           }
         }
@@ -2912,7 +3702,20 @@ function registerJetHubEndpoints(
         }
         // 账号状态**在模型之后**处理（顺序理由见上）。返回实际变更数，
         // 已是目标状态的账号不计入，避免提示夸大成「已停用 N 个」。
-        const accountCount = await pool.setAccountsEnabled(req.provider, req.enabled)
+        // antigravity：账号不在本插件池（非凭据型：在 agy 池），同步启停写它。
+        let accountCount: number
+        if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
+          const agyGot = requireAgyService(antigravity)
+          if (!agyGot.ok) return { ok: false, error: agyGot.error }
+          accountCount = 0
+          for (const acc of agyGot.svc.pool.getAccounts()) {
+            if (agyGot.svc.pool.setAccountEnabled(acc.id, req.enabled)) accountCount++
+          }
+        } else if (req.provider === DOUBAO_PROVIDER_ID) {
+          accountCount = 0
+        } else {
+          accountCount = await pool.setAccountsEnabled(req.provider, req.enabled)
+        }
         // 两个方向都改变 listModels 的结果（关/开黑名单），**必须广播**，
         // 否则对话框的模型选择器要重启才更新（成因见 broadcastCatalogChanged）。
         broadcastCatalogChanged(ctx)

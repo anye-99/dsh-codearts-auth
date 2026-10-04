@@ -136,18 +136,24 @@ describe('积分能力矩阵', () => {
   })
 
   /**
-   * ⚠️ **订阅额度目前只登记给 Cline**，这是与后端的硬约定：
-   * `src/jet-hub-rpc.ts` 的 `cline.quota` / `cline.requestLog` 对非 Cline
-   * 一律回 `bad-request`。前端若多登记一家，用户就会看到一个点了必然报错的
-   * 按钮（与 CodeArts 早期 `credits.balances` 那次是同一类缺陷）。
+   * ⚠️ **订阅额度登记给 cline 与 antigravity 两家**，这是与后端的硬约定：
+   * `src/jet-hub-rpc.ts` 的 `subscriptionQuota.get` / `subscriptionQuota.requestLog`
+   * 对未登记的 provider 一律回 `bad-request`。前端若多登记一家，用户就会看到
+   * 一个点了必然报错的按钮（与 CodeArts 早期 `credits.balances` 那次同类）。
    *
-   * 「只给 cline」用**全表推导**而不是逐个列举：将来新增渠道时，
+   * 「只给这两家」用**全表推导**而不是逐个列举：将来新增渠道时，
    * 若有人顺手也登记了 `subscriptionQuota`，这条会立刻变红，
    * 迫使他同时改后端分派（否则就是死按钮）。
+   *
+   * ⚠️ 两家的数据形状**不同**，共用同一端点名与渲染结构是刻意收敛的结果
+   * （同族语义用一套表达，见 `jet-hub-rpc.ts` 的 qoderFamily 注册表教训）：
+   * Cline = 单套 3 窗（5h/周/月）+ 本地逐笔流水；
+   * Antigravity = 按 family 分组各 2 窗（5h 滚动 + 本周）、**无逐笔记录**
+   * （后端如实回 `note` + 空表）。
    */
-  it('订阅额度只登记给 cline（其余渠道不得渲染该按钮）', () => {
+  it('订阅额度只登记给 cline 与 antigravity（其余渠道不得渲染该按钮）', () => {
     const withQuota = Object.keys(CREDITS_CAPABILITIES).filter(supportsSubscriptionQuota)
-    expect(withQuota).toEqual(['cline'])
+    expect(withQuota).toEqual(['cline', 'antigravity'])
     for (const id of ['codearts', 'buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn', 'trae', 'loomy', 'raccoon']) {
       expect(supportsSubscriptionQuota(id), `${id} 不应支持订阅额度`).toBe(false)
     }

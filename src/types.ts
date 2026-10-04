@@ -110,6 +110,17 @@ export interface RpcCreateAccountRequest {
    * 不需要手机号；Loomy 走**短信验证码**登录，故须由前端先收集。
    */
   phone?: string
+  /**
+   * 别名（**仅 Antigravity 用**）：新增隔离副账号时的展示名。
+   *
+   * Antigravity 是非凭据型面板：alias / proxyUrl 直接透传给 `poolAuth.begin()`。
+   */
+  alias?: string
+  /**
+   * 代理 URL（**仅 Antigravity 用**）：该副账号换码 / 取 email 走代理
+   * （无代理环境直连 Google 必然超时，见 `agy/pool-auth.ts` 注释）。
+   */
+  proxyUrl?: string
 }
 export interface RpcCreateAccountResponse {
   accountId: string
@@ -130,6 +141,13 @@ export interface RpcCreateAccountResponse {
    * 行为必须逐字节不变。
    */
   loginMode?: 'url' | 'sms'
+  /**
+   * 授权页二维码（**仅 Antigravity 返回**，data URL）。
+   *
+   * 宿主侧用 qrcode 依赖生成（客户端 bundle 不引 QR 库）；
+   * loopback 自动捕获失败时用户扫码 / 点链接后在面板里粘授权码。
+   */
+  qrDataUrl?: string
 }
 
 export interface RpcPollLoginRequest {
@@ -140,6 +158,19 @@ export interface RpcPollLoginResponse {
   done: boolean
   success?: boolean
   error?: string
+  /**
+   * antigravity 专属附加字段（**仅 Antigravity 返回**，其余 provider 不写）。
+   *
+   * Antigravity 是非凭据型面板：`login.poll` 观察的是 poolAuth 流程状态机
+   * 而不是「凭据是否落盘」。`phase`/`url`/`code` 让前端能渲染授权链接、
+   * 并区分「等待授权 / 换码中 / 已完成 / 失败（附原因码）」。
+   */
+  /** poolAuth 状态机阶段：`idle`（无活动流程）/ `waiting` / `exchanging` / `done` / `failed`。 */
+  phase?: 'idle' | 'waiting' | 'exchanging' | 'done' | 'failed'
+  /** 授权页 URL（waiting 阶段给出；loopback 失败时前端引导用户粘码）。 */
+  url?: string
+  /** 失败时的稳定原因码（`invalid_code` / `exchange_failed` / …，locale 无关）。 */
+  code?: string
 }
 
 export interface RpcUpdateAccountRequest {
@@ -375,8 +406,7 @@ export interface RpcCreditsBalanceAccount {
 }
 
 /** RPC: 查询积分余额响应 */
-export interface RpcCreditsBalancesResponse {
-  accounts: RpcCreditsBalanceAccount[]
+export interface RpcCreditsBalancesResponse {  accounts: RpcCreditsBalanceAccount[]
   /**
    * 当前生效的「临时积分」窗口（天）—— **CodeBuddy / WorkBuddy / TRAE /
    * LobsterAI 返回**。
@@ -511,6 +541,12 @@ export interface RpcClineRequestLogRow {
 /** RPC: 请求记录响应（最新在前）。 */
 export interface RpcClineRequestLogResponse {
   rows: RpcClineRequestLogRow[]
+  /**
+   * 「该渠道不提供逐笔请求记录」的说明文案（**仅 antigravity 返回**，rows 为
+   * 空表）。面板据此显示原因而不是渲染一个空表假装支持（与 credits.status
+   * 对无签到渠道「如实返回 null」同一准则）。
+   */
+  note?: string
 }
 
 /**

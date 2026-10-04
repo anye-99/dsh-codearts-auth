@@ -395,11 +395,20 @@ describe('ZCode Jet Hub 登录接入', () => {
     const call = /registerJetHubRpc\(([^)]*)\)/.exec(source)
     expect(call?.[1]).toBeDefined()
     const args = (call?.[1] ?? '').split(',').map((s) => s.trim())
-    // ctx, pool, 然后 12 个 provider（合并后 minimax 排在 zcode 前），最后 modelAdapters。
-    expect(args.length).toBe(15)
-    expect(args[args.length - 4]).toBe('raccoon')
-    expect(args[args.length - 3]).toBe('minimax')
-    expect(args[args.length - 2]).toBe('zcode')
-    expect(args[args.length - 1]).toBe('modelAdapters')
+    // ctx, pool, 然后 14 个面板（合并后 minimax 排在 zcode 前；antigravity
+    // 是非凭据型面板、服务形参同样占一位 —— 它排在 zcode 之后），
+    // 最后是 modelAdapters 与 doubaoService 两个服务位。
+    // ⚠️ 2026-10-02 移除 vibex 面板后由 17 → 16（少一个实参位）。
+    // ⚠️ 2026-10-04 追加 doubaoService（doubao 面板的宿主侧服务）→ 17。
+    // 计数口径：`ctx` + `pool` + 13 个 auth 实例 + `antigravity` + `modelAdapters` + `doubao`
+    // —— 增删面板/服务位时这里与上面的索引偏移必须**同时**改。
+    expect(args.length).toBe(17)
+    expect(args[args.length - 7]).toBe('loomy')
+    expect(args[args.length - 6]).toBe('raccoon')
+    expect(args[args.length - 5]).toBe('minimax')
+    expect(args[args.length - 4]).toBe('zcode')
+    expect(args[args.length - 3]).toBe('agyService')
+    expect(args[args.length - 2]).toBe('modelAdapters')
+    expect(args[args.length - 1]).toBe('doubaoService')
   })
 })

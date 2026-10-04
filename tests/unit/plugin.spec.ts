@@ -550,17 +550,22 @@ describe('makeReadImage 图片桥接', () => {
  * 的目录项，且 `settingsPath: []` 使它们恒被判为「已配置」→ 十二行常驻、无法消失。
  *
  * 该声明已在本次改动中移除（机制与代价评估见 `src/llm-register-compat.ts` 模块头）。
- * 这里用一条**跨全部 provider** 的断言锁死：目录一条都不声明，但十二条路由都在
- *（模型选择器的可见性来自 adapter 路由，与声明无关）。
+ * 这里用一条**跨全部 provider** 的断言锁死：目录一条都不声明，而十三条 adapter
+ * 路由全部注册 —— 各按各自的事实断言，互不混用。
+ *（模型选择器的可见性来自 adapter 路由，与声明无关。）
+ *
+ * ⚠️ 「十三」的口径（2026-10-02 对齐后）：codearts + 11 个 LLM 路由 + antigravity
+ *（第 14 个面板）。曾经的 `vibex`（非 LLM 面板）与它那条「刻意缺席」的断言
+ * 已于 2026-10-02 随面板一并移除 —— 不是漏删，是事实变了。
  */
 describe('模型设置页：不声明可配置 provider', () => {
-  it('apply 后目录为空，但十二条 adapter 路由都已注册', () => {
+  it('apply 后目录为空，但十三条 adapter 路由都已注册', () => {
     const { ctx, llm } = makeContext()
     apply(ctx)
     expect(llm.configurableProviders).toEqual([])
     for (const provider of [
       'codearts', 'buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn',
-      'trae', 'cline', 'loomy', 'raccoon', 'minimax', 'zcode',
+      'trae', 'cline', 'loomy', 'raccoon', 'minimax', 'zcode', 'antigravity',
     ]) {
       expect(llm.registeredProviders, provider).toContain(provider)
     }

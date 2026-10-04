@@ -8,7 +8,14 @@
 
 ## 项目概述
 
-本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）与 `minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）十个 LLM provider 路由。
+本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）、`minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）、`zcode`（智谱 **Z.Code** 免费额度通道）、`antigravity`（Google **Antigravity** / 官方 `agy` CLI 进程桥接，**非凭据型**）十二个 LLM provider 路由，另有 `doubao`（字节 **豆包** 桌面客户端联动，**非凭据型、非 LLM 路由**）。
+<!-- 计数口径（2026-10-04 终态）：14 个面板 = codearts + 12 个 LLM 路由 + doubao（本地客户端面板）。
+⚠️ 曾接入的 `vibex`（非 LLM 面板）与 `mimocode` 均已移除 —— 面板增删时必须回来改这一句，
+且 `zcode-wiring.spec.ts` 的 `PROVIDERS` 计数断言（当前 14）与 `REF_PREFIX_TO_PROVIDER`
+要成对核对。antigravity **是** LLM 路由（`registerAdapterIdempotent(ctx.llm, ['antigravity'])`），
+故计入「十二个」，但它的**账号形态**与其余 11 家不同（非凭据型），见下文 Antigravity 维护要点。
+⚠️ `antigravity` 与 `doubao` 是**仅有的两个不进** `REF_PREFIX_TO_PROVIDER` 的面板（都非凭据型，
+补进去会在 `state.json` 丢失时造出指向空气的账号）；`jet-hub-store.spec.ts` 各有独立用例钉死。 -->
 
 `buddy` 与 `workbuddy` 同源：共用同一 CLI 内核与同一认证协议，差异全部收敛在 `src/product.ts` 的产品配置中。关键差异是 **`endpoint`**：中国版为 `copilot.tencent.com`，国际版为 `www.workbuddy.ai`，两者返回不同模型池，因此 endpoint 必须随产品切换、不可当作全局常量。此外 `platform` 分别为 `ide` 与 `workbuddy-ai`，国际版登录 URL 还追加 `version` / `loginSessionId`。
 
@@ -6802,3 +6809,134 @@ rail 宽度：实测（无头 Edge + 真实源码 STYLES，rail 高 446px、纵�
    `apply` / `inject`；再调 `apply(fakeCtx)` → 断言注册了 `settings.section` 且未抛错。
    这一步直接验证「插件能加载并注册设置页」，是 tsc 与单测都覆盖不到的一层。
 3. **产物层**：新能力在、旧能力未被破坏、源码与部署产物哈希一致。
+
+### ⚠️ VibeX（曾接入的面板，2026-10-02 **已整块移除**）
+
+**现状：代码、面板、测试全部删除，不要照着下面去"修复"一个不存在的东西。**
+用户 2026-10-02 要求「把这个部分从插件中移除」，整块下线。已删除物：
+`src/vibex*.ts`（product / oauth / auth / mcp / 归一）、4 个 `tests/unit/vibex-*.spec.ts`、
+客户端 `PROVIDERS` 条目 + 图标 + 样式 + 钥匙按钮 + 能力位、RPC 的 `account.create` /
+`account.refresh` / `credits.balances` / `vibex.sso.import` / `model.list` 五处分支、
+`REF_PREFIX_TO_PROVIDER` 的 `['VIBEX', 'vibex']`、`types.ts` 的两个 RPC 接口。
+
+**为什么记下来**：它是本仓库**唯一一个非 LLM 面板**，下面四条结论对将来任何
+「接入一个没有补全端点的服务」都有复用价值（重新评估时的起点，不是待办）：
+
+1. **「非 LLM ⇒ 不算 provider」是直觉陷阱**。占位数组按**实参位**计数，不按语义：
+   `registerJetHubRpc` 的实参、客户端 `PROVIDERS`、`zcode-rpc-login.spec` 的
+   `args.length` 全都要有它；而 `plugin.spec.ts` 的「adapter 路由」清单**不能**加
+   （它没注册 `ctx.llm` 路由）。增删面板时这几处必须一起动。
+2. **两条凭据通道可能互不通用**：MCP OAuth token 只保证能开 `/mcp/vibex`；控制面
+   （余额）只认浏览器登录态（`Rh-Accesstoken`）。判据来自实测 —— 假 Bearer 回
+   `412 TOKEN_INVALID`。`TOKEN_MISSION` 是**服务端原文拼写**，别"顺手修正"成 MISSING。
+3. **OAuth 发现必须走 RFC 9728 链（资源→AS），不能信站点根 well-known**。
+   真机两连坑：根 well-known 当时指向**面向 Codex CLI 的另一个 AS**（`/vc/api/codex/oauth`），
+   拿它的端点注册 4 项 scope 能过、但 authorize 因 `/mcp/vibex` 不属于它而回
+   `INVALID_RESOURCE`。一个站点可以有**多个 AS 各管各的资源**，资源→AS 的绑定只写在
+   `/.well-known/oauth-protected-resource/<path>` 里。
+4. **分钟级寿命的凭据会暴露调度周期的死区**（**这条结论仍然生效**，见
+   `src/index.ts` 的 `REFRESH_INTERVAL_MS`）：15 分钟 token + 到期前 120s 续期窗口
+   ⇒ 30 分钟粒度的检查点必然错过，中间是「已过期未续」的 401 死区。周期下界由
+   **最短寿命**决定，不是由多数派（小时级）决定 —— 现为 5 分钟，别改回 30。
+
+回归防线（当时）：`tests/unit/vibex-panel.spec.ts`（客户端门控）+ `jet-hub-rpc.spec.ts`
+的对照组用例（同一必然抛错的 llm 桩：buddy 报错证明路径经过 llm、vibex 拿空目录
+证明短路在前）。两者**随面板一并删除** —— 事实变了，用例就该走，不是漏删。
+
+### ⚠️ Antigravity（第 14 个面板·非凭据型）接入维护要点（2026-10-02 对齐）
+
+Antigravity（Google 官方 `agy` CLI）是**唯一一个不由本插件持有凭据的面板**：
+token 在系统钥匙串 / 凭据管理器里由官方二进制自管，一个账号 = 一个隔离 HOME
+目录（`~/.dsh/agy-accounts/pool.json`）。将来维护时最容易犯的五件事：
+
+1. **它出现在所有「位置契约」里，但不在 `ctx.credentials` 里**。`registerJetHubRpc`
+   的实参占位（第 14 位 `agyService`）、客户端 `PROVIDERS`（第 14 条）、
+   能力矩阵、`zcode-rpc-login.spec` 的 `args.length===17`、`plugin.spec` 的
+   「十三条 adapter 路由」清单**都要**有它；但 `REF_PREFIX_TO_PROVIDER`
+   **刻意没有** `['ANTIGRAVITY','antigravity']` —— 加进去 = `state.json` 丢失时
+   凭空造出指向空气的账号条目（同 vibex 那条「非 LLM ⇒ 不算 provider」的直觉陷阱，
+   方向相反但成因同类）。由 `jet-hub-store.spec.ts` 的两条用例双向钉死。
+2. **动词边界：该走标准动词的绝不留在扩展命名空间**。账号增删改查/排序/刷新/
+   重测/重置/登录发起/登录轮询/模型开关/供应商开关 = 标准 `account.*` /
+   `login.poll` / `model.*` / `provider.*`（服务端在各 case 内按 provider
+   分派到 `antigravity` 形参）；`antigravity.*` 只剩**无标准对应物**的九个
+   （粘码 / 取消 / 主账号登录 / 慢探针 / 状态快照 / 设主号 / 取号模式 / 代理 /
+   开终端）。旧名 `agy.*` 是移植自对面插件的二进制名前缀，已全部改名 ——
+   「agy 是二进制名、antigravity 才是 provider id」的阅读歧义不要再引进来。
+   被标准动词吸收的旧端点（`agy.loginBegin`/`agy.refreshQuota`/`agy.clearCooldown`/
+   `agy.models`）**不得复活**：同一件事两套表达必然漂移（对面 HTTP 面的教训）。
+   回归防线：`antigravity-wiring.spec.ts`（按 case 边界切体断言，不用距离式正则）。
+3. **分派判据分两种**：payload 带 `provider` 的（list/create/reorder/retestAll/
+   resetAll/login.poll/provider.*）按 `ANTIGRAVITY_PROVIDER_ID` 等值判；
+   只有 `accountId` 的（update/delete/refresh/retest/reset）按**账号 id 反查
+   agy 池**（`requireAgyService` + `pool.getAccount`）—— 后者是这些请求契约里
+   唯一可行的判据，写死 provider 反而要前端多传字段。两种判据混用会静默错对象
+   （WorkBuddy 刷新按钮、qoder 刷错凭据的同族缺陷）。
+4. **面板不得反向 import `jet-hub.js`**：共享 `AccountCard` / `ModelListPanel` /
+   `SubscriptionQuotaPanel` 一律**以 prop 注入**（`jet-hub.js` 已 import 面板
+   文件，反向 import = 循环依赖，esbuild 静默产出 undefined 绑定，运行期才炸）。
+   面板渲染处**不得**直写端点名，一律经 `antigravity-api.js`（唯一出口）。
+5. **两条真实耗时别当卡死**：`antigravity.status` 是毫秒级内存快照（轮询只走它）；
+   慢探针 `antigravity.probe`（登录态真探 + 目录发现）未登录时要挂约 15 秒
+   （`agy models` 不打印授权 URL，等 watchdog 杀进程）—— 只有用户显式点「刷新」
+   才允许慢。`ModelCatalog` 的失败负缓存（TTL 内不再 spawn）是防「5s 轮询叠出
+   常驻挂起子进程」的（2026-10-02 永久 loading 故障的根因，用例锁死）。
+
+其它不可回退的细节：主账号（systemHome）槽位**不可删**（删掉后授权成功也无处
+回填 email/配额，面板显示「还没有账号」的实测链路）；`poolAuth.beginPrimary`
+必须能带代理（换码/取 email 直连 Google 必超时）；登录成功（phase=done）要
+**同时**破目录负缓存 + 登录态 60s 缓存 + 广播 `llm/adapters-updated`，缺任何
+一条都会「登录成功了但界面一分钟不变」；family cooldown → 共享卡
+`modelRateLimits` 的映射只算未过期项；`subscriptionQuota.requestLog` 对 agy
+如实回 `note` + 空表（官方网关无逐笔流水），不得渲染假支持；额度量纲换算
+方向是 remaining(0–1) → percentUsed=(1-r)*100，写反就是「用掉 70%」显示成
+「还剩 70%」。
+
+### ⚠️ Antigravity 的**响应速度**：两个已查明的瓶颈（2026-10-03）
+
+用户要求「提高 Gemini 的响应速度」。实测拆解后，慢的原因**不在网络也不在
+模型**，而是两处与 agy 进程打交道的实现细节。维护时别把它们改回去。
+
+**瓶颈 1（已修）：流式被写成全量等待 ⇒ 首字延迟 = 整段生成时间。**
+原 `driveOnce` 写成 `const o = await outcome` —— 等 agy 进程**结束**才把
+`o.stdout` 一次性喂给 parser。那段代码自己的注释就写着「那样失去流式……
+为保留流式，改用轮询 drain pending」，但轮询从未实现、`pending` 始终为空
+（重构半途而废）。修复 = `onLine` → `parser.feed` → `mapper.map` → 队列
+（数组 + 唤醒回调，**不轮询**）→ generator 边到边 `yield`；收尾再 `await`。
+
+- 实测（agy 登录态正常时）：首字 **18.9s → 9.5s**，总耗时不变（本来就是 18.9s）。
+- ⚠️ **`parser.feed(line + '\n')` 必须补回换行**：`onLine` 已把 `\n` 剥掉，
+  而 `feed` 是按行累积缓冲的 —— 不补就永远攒着不解析，表现为「整个流一个字都不出」。
+- ⚠️ **必须保留收尾处的 `emitFailure('PROCESS_EXIT')`**：流式路径下事件边走边发，
+  没有 `result` 事件时 mapper **从未 finish**，漏了它 harness 等不到 finish 块、
+  UI 永远停在「运行中」（旧实现因为结束时统一 flush 全量事件反而不会漏）。
+- 回归防线 `tests/unit/antigravity-streaming.spec.ts`：假 agy「先吐内容→静默
+  2.5s→再收尾」，断言**首块早于静默期结束**到达。⚠️ 判据必须是**时序关系**，
+  不是「有没有输出」（后者在全量等待下同样成立 = 同义反复）。已反向验证：
+  改回 `await outcome` 后该条变红（首块 2567ms ≈ 总 2568ms）。
+
+**瓶颈 2（未修，待登录态实测）：每次调用都冷启动 agy，8–10 秒固定开销。**
+实测（登录态正常时）：`agy --version` 仅 130ms，但 `agy -p "hi"` 要 **15s**
+（首字节 7.4s）—— 开销全在 agy 自身启动（加载目录/认证/会话初始化）。
+`--input-format stream-json` 支持**一条进程跑多轮**（help 原文 "runs a turn for
+each"），实测同进程第 2/3 轮首字节降到 **0.66s（13 倍）**。
+⚠️ **但常驻会改变会话语义**：实测 agy 侧**累积上下文**（让它记 7391，下一轮
+答得出；问它第几轮，答「3」）。而本插件当前是**单轮代理**（每轮喂历史摘要 +
+尾部 user），直接复用进程会让摘要层层叠加。真要做必须同时解决：
+① 靠 `sessionId` + 历史前缀校验判断"是否为干净续轮"，不确定就重建进程；
+② `purpose: 'compaction' | 'session-title'` 的辅助调用**共享同一 sessionId**，
+   必须走独立进程，否则会污染主对话上下文；
+③ 账号切换（不同隔离 HOME）/ 模型或档位变更 / 空闲回收 / 崩溃重建 / dispose 清理。
+⇒ 这是一次架构级改动，**需在 agy 登录态下实测验证**再做（用户 2026-10-03 决定）。
+
+**默认思考档位**：`defaultEffortFor` 的阶梯是 `high → medium → low`，即**默认
+最慢档**。面板已暴露成开关（`antigravity.setDefaultEffort`，空串 = 跟随模型
+默认）；设置落 `~/.dsh/agy-accounts/settings.json`（**独立文档**，不进共享的
+`jet-hub/state.json` —— 为一家偏好改它的 schema + 三个后端不划算）。
+⚠️ 档位只有**模型目录未钉死时**才生效，用户在模型选择器里选的档位优先；
+⚠️ 改档位必须 `broadcastCatalogChanged`，否则模型选择器一直显示旧默认档；
+⚠️ 白名单是 `low|medium|high|max`（`agy --help` 原文），越界值在落盘前净化成
+空串 —— 绝不把 agy 不认的档位写进磁盘再发出去。
+回归防线 `tests/unit/agy-settings.spec.ts`（持久化/净化/降级）、
+`tests/unit/antigravity-effort-wire.spec.ts`（**捕获真实 argv** 断言
+`--effort` 后面的值；已反向验证：摘掉该字段后 medium/low 两条变红）。

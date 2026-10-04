@@ -64,13 +64,38 @@ describe('Cline 订阅额度：客户端接线', () => {
   /** 面板只在开关打开时挂载：关闭即不发请求（否则每次进面板都白发两次）。 */
   it('弹窗由 showQuota 控制挂载（关闭时不挂载）', () => {
     expect(client).toContain('const [showQuota, setShowQuota] = React.useState(false)')
-    expect(client).toMatch(/showQuota\s*\?[\s\S]{0,200}?React\.createElement\(ClineQuotaPanel/)
+    expect(client).toMatch(/showQuota\s*\?[\s\S]{0,200}?React\.createElement\(SubscriptionQuotaPanel/)
     expect(client).toContain('onClose: () => setShowQuota(false)')
   })
 
-  it('弹窗调用 cline.quota 与 cline.requestLog 两个端点', () => {
-    expect(client).toMatch(/rpcCall\('cline\.quota',\s*\{\s*provider:\s*'cline'\s*\}\)/)
-    expect(client).toMatch(/rpcCall\('cline\.requestLog',\s*\{[\s\S]{0,200}?provider:\s*'cline'/)
+  /**
+   * ⚠️ 端点**按 provider 参数化**（2026-10-02 泛化：原名 ClineQuotaPanel、
+   * 固定传 'cline'）。`subscriptionQuota` 能力位登记了几家，面板就吃几个
+   * provider —— 面板内部不得再出现任何写死的 provider 字面量。
+   */
+  it('弹窗调用 subscriptionQuota.* 两个端点且带 provider 形参', () => {
+    expect(client).toMatch(/rpcCall\('subscriptionQuota\.get',\s*\{ provider \}\)/)
+    expect(client).toMatch(/rpcCall\('subscriptionQuota\.requestLog',\s*\{ provider, accountId \}\)/)
+    expect(client).toMatch(/function SubscriptionQuotaPanel\(\{ provider, rpcCall, onClose \}\)/)
+  })
+
+  /**
+   * 「该渠道不提供逐笔记录」（Antigravity）时后端如实回 `note` + 空表：
+   * 面板显示原因，而不是渲染一个假装支持的空表。
+   */
+  it('不提供逐笔记录时显示后端的 note（不渲染假空表）', () => {
+    expect(client).toMatch(/setLogNote\(typeof res\?\.note === 'string' \? res\.note : ''\)/)
+    expect(client).toMatch(/if \(logNote !== ''\) \{/)
+  })
+
+  /**
+   * ⚠️ 弹窗文案不得给 Antigravity 说「Cline」或「月窗口」（它两样都没有），
+   * 不得给 Cline 说 family 配额。按 provider 分支，展示名走 PROVIDERS。
+   */
+  it('弹窗文案按 provider 取（不给 agy 说 Cline、不给 Cline 说月窗口）', () => {
+    expect(client).toMatch(/provider === ANTIGRAVITY_PANEL_ID[\s\S]{0,240}'额度窗口为 Antigravity 官方配额/)
+    expect(client).toMatch(/providerLabel = PROVIDERS\.find\(p => p\.id === provider\)\?\.label/)
+    expect(client).toMatch(/const subscriptionQuotaTitle = provider === ANTIGRAVITY_PANEL_ID/)
   })
 
   /**
@@ -108,8 +133,10 @@ describe('Cline 订阅额度：客户端接线', () => {
    */
   it('账号身份挂在弹窗副标题（单账号也看得到是谁的额度）', () => {
     expect(client).toMatch(/const quotaSubtitle = \(\) => \{/)
-    expect(client).toMatch(/Cline · \$\{quota\.length\} 个账号/)
-    expect(client).toMatch(/Cline · 账号 \$\{only\.nickname \|\| only\.accountId\}/)
+    // ⚠️ 2026-10-02 泛化：provider 名走 providerLabel（PROVIDERS 的 label），
+    // 不再写死 "Cline" —— Antigravity 登记了该能力位，副标题不能显示成 Cline。
+    expect(client).toMatch(/`\$\{providerLabel\} · \$\{quota\.length\} 个账号`/)
+    expect(client).toMatch(/`\$\{providerLabel\} · 账号 \$\{only\.nickname \|\| only\.accountId\}`/)
     expect(client).toMatch(/dim-jh-modalSubtitle' \}, quotaSubtitle\(\)/)
   })
 

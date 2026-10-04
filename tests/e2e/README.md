@@ -105,6 +105,7 @@
 | `cline-probe.e2e.spec.ts` | `DSH_CLINE_E2E=1` | **只读**：凭据结构（含 `account_id` 与 `workos:` 前缀）、**前缀不可剥的现场证据**（带前缀 200 / 剥掉 401）、积分余额（打印原始值供核对单位）、远端 `free` 集合与 `/models` 目录。**不发模型请求、不续期** |
 | `minimax-probe.e2e.spec.ts` | `DSH_MINIMAX_E2E=1` | **只读**：远端模型目录（4 个模型 + 只有 M3.1 有档位）、签到状态、积分余额。**绝不领取**（`claim` 会消耗当天唯一一次机会）。⚠️ 读的是 **MiniMax Code 客户端自己的登录态**（`~/.minimax/auth/prod/cn/mcode-public/auth.json`），**不是**本插件的凭据存储 —— 该 provider 尚未在任何机器上完成过插件登录。⚠️ **token 过期时自动 skip 并打印指引**，**不代客户端续期**（代续期若遇服务端轮换 refresh_token 就会弄坏用户客户端登录态，详见 `minimax-credential.ts` 的长注释） |
 | `minimax-chat-probe.e2e.spec.ts` | `DSH_MINIMAX_CHAT_E2E=1` + `DSH_MINIMAX_CHAT_E2E_CONFIRM=yes` | 发一次 Anthropic Messages 推理请求。⚠️ **本轮该链路未端到端验证**：本机账号 `insufficient_balance_error`（HTTP 402）。保留探针是为了充值后一条命令验证，并把「未验证」留在代码里。⚠️ 该文件头如实标注了 `thinking.type=adaptive` 的**证据强度**（客户端取证支持 adaptive 形态，但「非 adaptive 会 400」目前只有计划文档声称、无服务端证据） |
+| `antigravity-probe.e2e.spec.ts` | `DSH_ANTIGRAVITY_E2E=1` | **只读**：驱动本仓库的 `AntigravityService` 装配层 —— agy 二进制/版本解析、休眠原因、模型目录（discovered/fallback 均合法，并验证**二次调用毫秒级返回**的缓存判据）、登录态真探三态、账号池快照与 family 配额双窗量纲。**不发推理请求、不登录**。⚠️ 它与其余探针不同：凭据归**官方 agy 二进制**（不读 `.credentials.yaml`）；未登录时目录/登录态两条用例会各挂约 15 秒（watchdog 真实耗时，不是卡死）。前置：装好 agy CLI（`agy --version` 可用）；`pnpm test:e2e:antigravity` |
 
 > CodeArts deepseek-v4 系列使用华为云免费福利额度（每日 1000 万免费 Tokens），
 > 不产生额外费用，因此 `DSH_CODEARTS_E2E=1` 不需要确认变量。

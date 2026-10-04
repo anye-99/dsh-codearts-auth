@@ -52,8 +52,13 @@ describe('接线点完整性（源码断言）', () => {
     expect(indexSource).toContain("['minimax', (p) => minimax.refreshAll(p)]")
     // 5. modelAdapters 登记
     expect(indexSource).toContain('minimax: minimaxAdapter')
-    // 6. registerJetHubRpc 实参（⚠️ 2026-09-30 合并后 zcode 排在 minimax 之后）
-    expect(indexSource).toMatch(/loomy, raccoon, minimax, zcode, modelAdapters/)
+    // 6. registerJetHubRpc 实参（⚠️ 2026-09-30 合并后 zcode 排在 minimax 之后；
+    //    2026-10-02 又加 agyService（antigravity 装配服务，非凭据型面板同样占一位），
+    //    它排在 zcode 之后、modelAdapters 之前。同日移除 vibex 面板，故 zcode 直接
+    //    接 agyService。
+    //    这条正则的本意就是「数占位」：新增面板时必须同步在这里补一个名字，
+    //    否则 modelAdapters 会错位落到最后一个 auth 形参上（本仓库已踩七次）。）
+    expect(indexSource).toMatch(/loomy, raccoon, minimax, zcode, agyService, modelAdapters/)
   })
 
   it('⚠️ index.ts 的 refresh 回调必须用两层结构（available.entry.*）', () => {

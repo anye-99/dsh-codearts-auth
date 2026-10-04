@@ -47,6 +47,13 @@ import { MinimaxAuth } from './minimax-auth.js'
 import { registerMinimaxLlm } from './minimax-adapter.js'
 import { MINIMAX } from './minimax-product.js'
 import type { MinimaxCredential } from './minimax.js'
+// ===== Antigravity（Google agy CLI：账号池 + 进程桥接推理） =====
+// 自实现版：不再依赖 dsh-agy-link 插件。协议层在 src/agy/（runner/auth/pool/
+// quota/models），装配在 src/agy-service.ts，LlmAdapter 在 src/antigravity-adapter.ts。
+import { createAntigravityService } from './agy-service.js'
+import { AntigravityAdapter } from './antigravity-adapter.js'
+import { registerAdapterIdempotent } from './llm-register-compat.js'
+import { DoubaoService } from './doubao-service.js'
 
 export const name = 'codearts-auth'
 // `connection` 刻意不列入静态 inject：它只由 Web bundle（dsh-client-connection）
@@ -218,10 +225,14 @@ export function apply(ctx: Context): void {
   registerProviderSettings(
     ctx, 'llm-buddy', 'llm-workbuddy', 'llm-codearts', 'llm-lobsterai',
     'llm-qoder', 'llm-qodercn', 'llm-trae', 'llm-cline', 'llm-loomy', 'llm-raccoon',
-    'llm-minimax', 'llm-zcode',
+    'llm-minimax', 'llm-zcode', 'llm-antigravity',
   )
   const service = new CodeArtsAuth(ctx)
   const pool = new AccountPool(ctx)
+  const doubaoService = new DoubaoService()
+  ctx.effect(() => () => {
+    doubaoService.dispose()
+  }, 'codearts-auth.doubao')
 
   // WorkBuddy provider 已从中国版（copilot.tencent.com）改造为国际版
   // （www.workbuddy.ai）。旧账号存的是中国版凭据，其 token.domain 指向旧端点，
@@ -1236,13 +1247,27 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
 
   // ===== 多账号静默续期调度 =====
   // 替代原有的单账号 scheduleRefresh()，使用 refreshAll() 遍历所有账号续期
-  const REFRESH_INTERVAL_MS = 30 * 60 * 1000  // 每 30 分钟检查一次
+  //
+  // ⚠️ 2026-10-02 从 30 分钟降到 **5 分钟** —— 周期的下界由**最短寿命的凭据**决定，
+  // 不是由多数派（小时级）决定。当时触发它的是 VibeX 的 15 分钟 token
+  //（`expires_in=900`，续期窗口 [13,15] 分钟）：30 分钟粒度检查点（0,30,60…）
+  // **必然错过**该窗口，于是第 15~30 分钟是「凭据已过期、尚未续」的死区。
+  // VibeX 面板已于 2026-10-02 移除，但**这条结论不随之失效**：只要将来任何一家
+  // 出现分钟级寿命的凭据，30 分钟粒度就会复现同一个死区。5 分钟粒度
+  //（0,5,10,15…）对 ≥15 分钟的寿命都能命中窗口，留作安全裕度。
+  //
+  // ⚠️ 降频对网络是**零成本**：全部面板的 refreshAll 都走保守闸门（
+  // 凭据型 12 家经 `refreshAccountWithReconcile` → `shouldRefreshNow(expiresAt)`
+  // 门控，antigravity 经 `shouldPollAccount` 跳过 cooldown / 待重登账号），未进
+  // 窗口只做本地对账且「变了才写盘」短路 —— 多出来的只是每 5 分钟一次的本地遍历。
+  const REFRESH_INTERVAL_MS = 5 * 60 * 1000  // 每 5 分钟检查一次
 
   /**
-   * 十个 provider 实例的续期入口（`buddy` 与 `workbuddy` 是两个实例、同一个类）。
+   * 各 provider 实例的批量续期入口（`buddy` 与 `workbuddy` 是两个实例、同一个类；
+   * 数量随面板增减，刻意不写死 —— 见 AGENTS.md「位置参数陷阱」）。
    *
    * 收成一张表是为了让「失败必须留日志」这条规则**只写一遍** —— 原先这里是
-   * 十个空 catch（注释写着「静默」），把 provider 内部的告警与异常一起吞掉，
+   * 一排空 catch（注释写着「静默」），把 provider 内部的告警与异常一起吞掉，
    * 「凭据一直刷不动」在日志里完全无痕（issue !IKIRTT 的可观测性条目）。
    */
   const refreshTargets: ReadonlyArray<readonly [string, (pool: AccountPool) => Promise<void>]> = [
@@ -1266,6 +1291,11 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     // 使用户在官方客户端重新登录后无需重启 DSH。
     // ⚠ 只按 `refreshable` 过滤、**不看 `enabled`**（AGENTS.md 既有约定）。
     ['zcode', (p) => zcode.refreshAll(p)],
+    // Antigravity **无凭据可续**（官方 agy 二进制自续期）：refreshAll 做保守
+    // 闸门的配额刷新（跳过 cooldown / 待重登账号），与下方独立的后台配额
+    // 轮询互补 —— 那张表驱动"何时刷"，这里驱动"批量入口的形状与其余 13 家一致"。
+    ['antigravity', (p) => agyService.refreshAll()],
+    ['doubao', () => doubaoService.probe(true).then(() => undefined)],
   ]
 
   async function refreshAllCredentials(): Promise<void> {
@@ -1351,6 +1381,79 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     zcodeAdapter.stop()
   }, 'codearts-auth.scheduler (legacy)')
 
+  // ===== Antigravity（Google agy CLI）服务 =====
+  // 自实现版：协议层在 src/agy/，装配在 agyService，进程桥接适配器在下面注册。
+  // 不注册斜杠命令：入口在 Jet Hub 的 Antigravity 面板。
+  const agyService = createAntigravityService(ctx)
+  // 跨会话并发闸（对面 ADR-12 同款）：每个 agy 子进程是独立进程组，
+  // 但并发过高会同时敲 Google 风控。闸住 maxConcurrent。
+  const agySemaphore = (() => {
+    let active = 0
+    const waiters: Array<() => void> = []
+    const max = () => Math.max(1, agyService.config.maxConcurrent)
+    return {
+      acquire(): Promise<() => void> {
+        if (active < max()) {
+          active++
+          return Promise.resolve(() => { active-- ; const n = waiters.shift() ; if (n) n() })
+        }
+        return new Promise((resolve) => {
+          waiters.push(() => {
+            active++
+            resolve(() => { active-- ; const n = waiters.shift() ; if (n) n() })
+          })
+        })
+      },
+    }
+  })()
+  const agyBinRef: { current: string | null } = { current: agyService.agyBin }
+  const agyAdapter = new AntigravityAdapter({
+    getConfig: () => agyService.config,
+    catalog: agyService.catalog,
+    pool: agyService.pool,
+    bin: () => agyBinRef.current,
+    acquire: () => agySemaphore.acquire(),
+    log: (m) => ctx.logger.info(m),
+    // 传本插件的凭据型账号池：只为 `disabledModelsFor('antigravity')` 黑名单
+    // （Jet Hub 模型开关写入，listModels 套用）。agy 账号本身不在该池。
+    accountPool: pool,
+    // 登录门控：未登录时 listModels 返回空目录（选择器隐藏整组），避免一排
+    // "点了必失败"的模型。探针在适配器内**后台**跑，绝不阻塞目录构建
+    // （await 它就是 2026-10-02 那个永久 loading 故障的同型回归）。
+    probeSignedIn: () => agyService.auth.probeSignedIn(),
+    isDormant: () => agyService.dormant !== null,
+    notifyCatalogChanged: () => {
+      try {
+        ctx.emit('llm/adapters-updated')
+      } catch {
+        // 广播失败不反噬门控状态（与 jet-hub-rpc 的 broadcastCatalogChanged 同取向）
+      }
+    },
+  })
+  registerAdapterIdempotent(ctx.llm, ['antigravity'], agyAdapter)
+  // agyService 作为位置参数传给 registerJetHubRpc（与其余 13 家 auth 实例同
+  // 一契约，见下方调用）——jet-hub-rpc 的 handleMethod 用它给 antigravity
+  // 分派账号/登录/配额/模型端点，不再走模块级 holder。
+  // 背景配额轮询（与对面同款保守闸门：refreshAllQuotas 非 force 时经
+  // shouldPollAccount 跳过 cooldown / 待重登账号，不会从后台敲 Google 端点
+  // 去骚扰已知受限的账号）。间隔默认 15 分钟、下限 60s。
+  ctx.effect(() => {
+    const refresh = (): void => {
+      void agyService.quota.refreshAllQuotas().catch(() => undefined)
+    }
+    const boot = setTimeout(refresh, 5_000)
+    boot.unref?.()
+    const timer = setInterval(refresh, Math.max(60_000, agyService.config.quotaPollIntervalMs))
+    timer.unref?.()
+    return () => {
+      clearTimeout(boot)
+      clearInterval(timer)
+    }
+  }, 'codearts-auth.antigravity-quota-poll')
+  ctx.effect(() => () => {
+    agyService.dispose()
+  }, 'codearts-auth.antigravity')
+
   // ===== Jet Hub RPC 注册 =====
   // provider → 适配器实例：Jet Hub「显示列表」需要 `listAllModels()`（不受用户
   // 黑名单影响的全量目录，带最终展示名/倍率）。DSH 的 `ctx.llm` 只保证
@@ -1370,8 +1473,9 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     raccoon: raccoonAdapter,
     minimax: minimaxAdapter,
     zcode: zcodeAdapter,
+    antigravity: agyAdapter,
   }
 
-  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, modelAdapters)
+  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, agyService, modelAdapters, doubaoService)
   ctx.provide('accountPool', pool)
 }

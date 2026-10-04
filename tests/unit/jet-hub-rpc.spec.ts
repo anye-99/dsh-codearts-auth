@@ -981,6 +981,7 @@ describe('model.list / model.setDisabled 端点', () => {
       {} as never, // raccoon
       {} as never, // minimax
       {} as never, // zcode（2026-09-29 新增，紧随 raccoon）
+      undefined, // antigravity（2026-10-02 对齐：服务形参可缺省 ⇒ 分支回「不可用」）
       options.modelAdapters as never,
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
@@ -2002,6 +2003,12 @@ describe('provider.status / provider.setEnabled 端点', () => {
       // 上游此后又加了 `minimax` 与 `zcode` ⇒ 这里少两个占位、`modelAdapters`
       // 落到 `zcode` 上，本组 3 条用例**再次**以完全相同的形态失败。
       // 判据永远是同一条：`provider.status` 的 `total` 恒为 0 ⇒ 先数占位。
+      // ⚠️ **第七次**（2026-10-01 接入 `vibex`）：它**不是 LLM provider**
+      // （无模型、无路由），但 `registerJetHubRpc` 的实参位照占 ——
+      // 「非路由面板」恰恰是最容易被当成「不用补占位」的那类，故在此点名。
+      // ⚠️ **第八次**（2026-10-02）：`vibex` 面板被整块移除、同时插入
+      // `antigravity`（`agyService`，**可缺省**的形参）—— 一增一减。
+      // 可缺省形参在这里写 `undefined` 即可（分支回规范「不可用」错误）。
       ctx as never, pool,
       {} as never, // codearts
       {} as never, // buddy
@@ -2015,6 +2022,7 @@ describe('provider.status / provider.setEnabled 端点', () => {
       {} as never, // raccoon
       {} as never, // minimax
       {} as never, // zcode
+      undefined, // antigravity（服务形参可缺省 ⇒ 分支回「不可用」）
       (adapter !== undefined ? { buddy: adapter } : undefined) as never,
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
@@ -2291,21 +2299,28 @@ describe('provider.status / provider.setEnabled 端点', () => {
 })
 
 /**
- * Cline「订阅额度」端点（`cline.quota` / `cline.requestLog`）。
+ * 「订阅额度」端点（`subscriptionQuota.get` / `subscriptionQuota.requestLog`）。
  *
  * 参考实现：`github.com/codeOct/dsh-cline-pass` 的额度管理与请求记录部分。
  *
- * 这里守住四条真正的不变式：
- * 1. **只认 cline** —— 其余 provider 一律 `bad-request`（前端另有
- *    `supportsSubscriptionQuota` 门控，两侧必须一致）。
+ * 2026-10-02 泛化：旧名 `cline.quota` / `cline.requestLog` 只认 Cline，泛化后
+ * 按 provider 分派（Cline + Antigravity 共用一条路径 —— 同族语义用一套表达，
+ * 与 `qoderFamily` 注册表同一取向）。旧名经 `handleMethod` 的归一层仍可用
+ * （旧客户端缓存兼容），本组用例用**新名**打，另有一条用例钉住旧名映射。
+ *
+ * 这里守住五条真正的不变式：
+ * 1. **只认登记过的 provider**（cline / antigravity）—— 其余一律
+ *    `bad-request`（前端另有 `supportsSubscriptionQuota` 门控，两侧必须一致）。
  * 2. **额度逐账号隔离** —— 一个账号凭据坏掉不能让整批失败，
  *    否则多账号用户会因为「有一个号没配凭据」而完全看不到额度。
  * 3. **游标只走 `?cursor=`** —— 网关对 `page`/`offset` 静默忽略，
  *    传错会表现为「点了加载更多还是同一批」（最难排查的一类静默错误）。
  * 4. **请求记录失败是载荷（`ok:false`）而不是 RPC 错误** ——
  *    面板要保留已加载的行、只在下方显示原因。
+ * 5. **antigravity 的剩余比例 → 已用百分比换算 + 不提供记录时如实回 note**
+ *    （无量纲双窗：google/anthropic/openai 各 5h + weekly）。
  */
-describe('cline.quota / cline.requestLog 端点', () => {
+describe('subscriptionQuota.get / subscriptionQuota.requestLog 端点', () => {
   type Handler = (request: Request) => Promise<Response>
 
   /** 凭据形态与实测一致（`account_id` 是 `usr-…`）。 */
@@ -2339,6 +2354,8 @@ describe('cline.quota / cline.requestLog 端点', () => {
     accounts?: Array<{ id: string; enabled: boolean }>
     /** `ctx.credentials.resolve` 的返回值：`'valid'` = 合法凭据 JSON，`'missing'` = 未配置。 */
     credential?: 'valid' | 'missing'
+    /** antigravity 服务形参（订阅额度的 agy 路径用；省略 = 缺席 ⇒ 不可用错误）。 */
+    agy?: unknown
   } = {}) {
     const accounts = options.accounts ?? [{ id: 'acc-1', enabled: true }]
     const stored: Record<string, unknown> = {
@@ -2409,6 +2426,9 @@ describe('cline.quota / cline.requestLog 端点', () => {
       {} as never, // cline
       {} as never, // loomy
       {} as never, // raccoon
+      {} as never, // minimax
+      {} as never, // zcode
+      options.agy as never, // antigravity（订阅额度的 agy 路径；省略=缺席）
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
 
@@ -2437,11 +2457,11 @@ describe('cline.quota / cline.requestLog 端点', () => {
 
   afterEach(() => { vi.unstubAllGlobals() })
 
-  describe('cline.quota', () => {
+  describe('subscriptionQuota.get（cline 路径）', () => {
     it('回传各账号的额度窗口（按网关原序）', async () => {
       stubFetch(() => new Response(JSON.stringify(LIMITS_RESPONSE), { status: 200 }))
       const { call } = setup()
-      const result = await call('cline.quota', { provider: 'cline' })
+      const result = await call('subscriptionQuota.get', { provider: 'cline' })
       expect(result.ok).toBe(true)
       const accounts = (result.value as { accounts: Array<{ ok: boolean; windows: Array<{ type: string }> }> }).accounts
       expect(accounts).toHaveLength(1)
@@ -2452,7 +2472,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('用 users/me 端点（不依赖账号 id）', async () => {
       const urls = stubFetch(() => new Response(JSON.stringify(LIMITS_RESPONSE), { status: 200 }))
       const { call } = setup()
-      await call('cline.quota', { provider: 'cline' })
+      await call('subscriptionQuota.get', { provider: 'cline' })
       expect(urls[0]).toBe('https://api.cline.bot/api/v1/users/me/plan/usage-limits')
     })
 
@@ -2464,7 +2484,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
       const urls = stubFetch(() => new Response(JSON.stringify(LIMITS_RESPONSE), { status: 200 }))
       const { call } = setup()
       for (const provider of ['buddy', 'qoder', 'loomy', '']) {
-        expect((await call('cline.quota', { provider })).ok, provider).toBe(false)
+        expect((await call('subscriptionQuota.get', { provider })).ok, provider).toBe(false)
       }
       expect(urls).toEqual([])
     })
@@ -2478,7 +2498,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
       // 按 ref 区分较麻烦，故直接验证「missing 时不发请求且带原因」这一半。
       stubFetch(() => new Response(JSON.stringify(LIMITS_RESPONSE), { status: 200 }))
       const { call } = setup({ accounts: [{ id: 'acc-1', enabled: true }], credential: 'missing' })
-      const result = await call('cline.quota', { provider: 'cline' })
+      const result = await call('subscriptionQuota.get', { provider: 'cline' })
       expect(result.ok).toBe(true)
       const accounts = (result.value as { accounts: Array<{ ok: boolean; error?: string; windows: unknown[] }> }).accounts
       expect(accounts[0]!.ok).toBe(false)
@@ -2489,7 +2509,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('网关报错时该账号 ok:false 并带 HTTP 状态与文案', async () => {
       stubFetch(() => new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 }))
       const { call } = setup()
-      const result = await call('cline.quota', { provider: 'cline' })
+      const result = await call('subscriptionQuota.get', { provider: 'cline' })
       const accounts = (result.value as { accounts: Array<{ ok: boolean; error?: string }> }).accounts
       expect(accounts[0]!.ok).toBe(false)
       expect(accounts[0]!.error).toContain('HTTP 401')
@@ -2500,14 +2520,14 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('查询失败时 windows 为空且 ok:false（不返回 0% 的假读数）', async () => {
       stubFetch(() => new Response(JSON.stringify({ success: true, data: {} }), { status: 200 }))
       const { call } = setup()
-      const result = await call('cline.quota', { provider: 'cline' })
+      const result = await call('subscriptionQuota.get', { provider: 'cline' })
       const accounts = (result.value as { accounts: Array<{ ok: boolean; windows: unknown[] }> }).accounts
       expect(accounts[0]!.ok).toBe(false)
       expect(accounts[0]!.windows).toEqual([])
     })
   })
 
-  describe('cline.requestLog', () => {
+  describe('subscriptionQuota.requestLog（cline 路径）', () => {
     /** 种入一条本地流水记录(模块级可变状态,用例间会泄漏,须先清)。 */
     const seedOne = (entry: Parameters<typeof recordClineRequest>[0]) => {
       resetClineRequestHistory()
@@ -2530,7 +2550,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
         totalMs: 4200,
       })
       const { call } = setup()
-      const result = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      const result = await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' })
       expect(result.ok).toBe(true)
       const value = result.value as {
         rows: Array<{
@@ -2586,7 +2606,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
         totalMs: 4200,
       })
       const { call } = setup()
-      const withRoute = (await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' }))
+      const withRoute = (await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' }))
         .value as { rows: Array<{ upstream: string }> }
       expect(withRoute.rows[0]!.upstream).toBe('alibaba')
 
@@ -2602,7 +2622,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
         ttftMs: 320,
         totalMs: 4200,
       })
-      const noRoute = (await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' }))
+      const noRoute = (await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' }))
         .value as { rows: Array<{ upstream: string }> }
       expect(noRoute.rows[0]!.upstream).toBe('cline-pass')
     })
@@ -2620,7 +2640,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
         totalMs: 4200,
       })
       const { call } = setup()
-      const result = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      const result = await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' })
       const row = (result.value as { rows: Array<Record<string, unknown>> }).rows[0]!
       expect(row.usageReported).toBe(false)
       expect(row.effort).toBe('')
@@ -2631,7 +2651,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('按 accountId 过滤:别的账号的记录不混进来', async () => {
       seedOne({ model: 'm', accountId: 'acc-other', inputTokens: 1, outputTokens: 2, ttftMs: 3, totalMs: 4 })
       const { call } = setup()
-      const result = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      const result = await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' })
       expect(result.ok).toBe(true)
       expect((result.value as { rows: unknown[] }).rows).toEqual([])
     })
@@ -2639,7 +2659,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('无记录时返回空数组(而不是错误)', async () => {
       resetClineRequestHistory()
       const { call } = setup()
-      const result = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      const result = await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' })
       expect(result.ok).toBe(true)
       expect((result.value as { rows: unknown[] }).rows).toEqual([])
     })
@@ -2655,7 +2675,7 @@ describe('cline.quota / cline.requestLog 端点', () => {
         error: 'cline: transport error: ECONNRESET',
       })
       const { call } = setup()
-      const result = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      const result = await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: 'acc-1' })
       const rows = (result.value as { rows: Array<{ error?: string }> }).rows
       expect(rows[0]!.error).toContain('ECONNRESET')
     })
@@ -2663,14 +2683,95 @@ describe('cline.quota / cline.requestLog 端点', () => {
     it('非 cline 的 provider → bad-request(与额度端点同规)', async () => {
       const { call } = setup()
       for (const provider of ['buddy', 'qoder', '']) {
-        expect((await call('cline.requestLog', { provider, accountId: 'acc-1' })).ok, provider).toBe(false)
+        expect((await call('subscriptionQuota.requestLog', { provider, accountId: 'acc-1' })).ok, provider).toBe(false)
       }
     })
 
     it('accountId 为空 → bad-request(不猜默认值)', async () => {
       const { call } = setup()
-      expect((await call('cline.requestLog', { provider: 'cline', accountId: '' })).ok).toBe(false)
-      expect((await call('cline.requestLog', { provider: 'cline' })).ok).toBe(false)
+      expect((await call('subscriptionQuota.requestLog', { provider: 'cline', accountId: '' })).ok).toBe(false)
+      expect((await call('subscriptionQuota.requestLog', { provider: 'cline' })).ok).toBe(false)
+    })
+  })
+
+  /**
+   * Antigravity 路径（2026-10-02 泛化时新增的第二个 provider）。
+   *
+   * 与 Cline 的三处语义差别都在这里钉住：
+   * 1. 数据来自**账号池缓存**（不发网络请求 —— 配额由 agyService.quota 维护）；
+   * 2. 量纲是**剩余比例**，端点必须换算成 `percentUsed`（已用百分比）；
+   * 3. **没有逐笔请求记录** —— 如实回 `note` + 空表，而不是渲染假支持。
+   */
+  describe('subscriptionQuota 的 antigravity 路径', () => {
+    /** 造 agy 服务桩：两个账号，各带 family 双窗配额（含缺失项）。 */
+    function makeAgyStub() {
+      return {
+        pool: {
+          getAccounts: () => [
+            {
+              id: 'acc_1', alias: 'primary', email: 'a@example.com',
+              quotas: {
+                google: { remainingFraction: 0.3, resetTime: '2026-10-02T12:00:00Z', weeklyFraction: 0.5, weeklyResetTime: '2026-10-05T00:00:00Z' },
+                anthropic: { remainingFraction: 1 },
+                // openai 整个缺失 ⇒ 不产出窗口（未查询 ≠ 0%）
+              },
+            },
+            { id: 'acc_2', alias: 'sec', quotas: {} },
+          ],
+        },
+      }
+    }
+
+    it('family 双窗换算成 percentUsed 并按 family:5h / family:weekly 命名，不发网络请求', async () => {
+      const urls = stubFetch(() => new Response('{}', { status: 200 }))
+      const { call } = setup({ agy: makeAgyStub() })
+      const result = await call('subscriptionQuota.get', { provider: 'antigravity' })
+      expect(urls).toEqual([]) // 数据来自账号池缓存，绝不打网关
+      expect(result.ok).toBe(true)
+      const accounts = (result.value as {
+        accounts: Array<{ accountId: string; nickname: string; ok: boolean; windows: Array<{ type: string; percentUsed: number; resetsAt: string }> }>
+      }).accounts
+      expect(accounts.map(a => a.accountId)).toEqual(['acc_1', 'acc_2'])
+      const win1 = accounts[0]!.windows
+      // 剩余 0.3 ⇒ 已用 70；weekly 0.5 ⇒ 50；anthropic 只剩 5h 窗（无 weekly 数据）
+      expect(win1).toEqual([
+        { type: 'google:5h', percentUsed: 70, resetsAt: '2026-10-02T12:00:00Z' },
+        { type: 'google:weekly', percentUsed: 50, resetsAt: '2026-10-05T00:00:00Z' },
+        { type: 'anthropic:5h', percentUsed: 0, resetsAt: '' },
+      ])
+      // 无任何配额数据的账号：ok:true + 空窗口（「该账号没有读数」≠ 查询失败）
+      expect(accounts[1]!.windows).toEqual([])
+    })
+
+    it('服务缺席时回结构化的 unavailable 错误（不是 handler-failed）', async () => {
+      const { call } = setup() // 不传 agy
+      const result = await call('subscriptionQuota.get', { provider: 'antigravity' })
+      expect(result.ok).toBe(false)
+      expect((result.error as { message: string }).message).toContain('Antigravity')
+    })
+
+    it('不提供逐笔记录：如实回 note + 空表（面板据此显示原因而不是假空表）', async () => {
+      const { call } = setup()
+      const result = await call('subscriptionQuota.requestLog', { provider: 'antigravity', accountId: 'acc_1' })
+      expect(result.ok).toBe(true)
+      const value = result.value as { rows: unknown[]; note?: string }
+      expect(value.rows).toEqual([])
+      expect(value.note).toContain('不提供逐笔请求记录')
+    })
+
+    /**
+     * 旧客户端兼容：`cline.quota` / `cline.requestLog` 经 handleMethod 的
+     * 归一层仍打到新端点 —— 不映射的话，浏览器缓存的旧 bundle 一点就
+     * 「unknown method」，表现成「订阅额度按钮坏了」。
+     */
+    it('旧端点名 cline.quota / cline.requestLog 归一到新名', async () => {
+      stubFetch(() => new Response(JSON.stringify(LIMITS_RESPONSE), { status: 200 }))
+      const { call } = setup()
+      const legacy = await call('cline.quota', { provider: 'cline' })
+      expect(legacy.ok).toBe(true)
+      expect((legacy.value as { accounts: Array<{ windows: unknown[] }> }).accounts[0]!.windows).toHaveLength(2)
+      const legacyLog = await call('cline.requestLog', { provider: 'cline', accountId: 'acc-1' })
+      expect(legacyLog.ok).toBe(true)
     })
   })
 })

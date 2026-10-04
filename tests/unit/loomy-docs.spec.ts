@@ -131,16 +131,43 @@ describe('Loomy 文档覆盖', () => {
     // 「改了数字忘了改列表」，且新增 provider 时**无需修改本用例**。
     const line = agents.split('\n').find((l) => l.includes('LLM provider 路由'))
     expect(line, '找不到 AGENTS.md 的 provider 概述行').toBeDefined()
-    const ids = [...line!.matchAll(/`([a-z]+)`（/g)].map((m) => m[1])
-    expect(ids.length, '概述行列出的 provider id 数量异常').toBeGreaterThan(0)
-    const CN_DIGITS: Record<string, number> = {
-      一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
-    }
     // ⚠️ 数字与「个」之间**没有**空格（「九个」），空格在「个」之后。
     const stated = /([一二三四五六七八九十]+)个\s*LLM provider 路由/.exec(line!)
     expect(stated, '概述行未声明 provider 数量').not.toBeNull()
+    /**
+     * ⚠️ **只在「N 个 LLM provider 路由」这一句之内数 id**。
+     *
+     * 2026-10-04 接入 `doubao`（豆包，**非 LLM 路由**的本地客户端面板）后，
+     * 它作为「另有 …」出现在同一行的句末 —— 若整行计数，数量词（十二个 LLM
+     * 路由）就会被 doubao 顶成 13，得到与文档对错无关的假失败。
+     * 截断到数量词之前，判别力不变：LLM 路由增删仍会让本用例红。
+     */
+    const llmClause = line!.slice(0, stated!.index)
+    const ids = [...llmClause.matchAll(/`([a-z]+)`（/g)].map((m) => m[1])
+    expect(ids.length, '概述行列出的 provider id 数量异常').toBeGreaterThan(0)
+    /**
+     * 中文数字 → 阿拉伯数字（支持 一..九十九）。
+     *
+     * ⚠️ **这里原来是一张 `一`..`十` 的平表**，于是从**第 11 个** provider 起
+     * （zcode 之后），「十二」查表得 `undefined`，断言变成
+     * `expected undefined to be 12` —— 一个与文档对错**无关**的假失败，
+     * 而且它恰好在本文件自称「新增 provider 时无需修改本用例」的那条用例里。
+     * 补成真正的解析器，而不是把表加到「十二」了事 —— 后者到 13 又会坏。
+     * 判别力保持不变：写「十三」而列表只有 12 个时，本用例照样红。
+     */
+    const cnToNumber = (text: string): number | undefined => {
+      const digits: Record<string, number> = {
+        零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9,
+      }
+      if (!text.includes('十')) return digits[text]
+      const [head, tail = ''] = text.split('十')
+      const tens = head === '' ? 1 : digits[head]
+      const ones = tail === '' ? 0 : digits[tail]
+      if (tens === undefined || ones === undefined) return undefined
+      return tens * 10 + ones
+    }
     expect(
-      CN_DIGITS[stated![1]!],
+      cnToNumber(stated![1]!),
       `概述行声称 ${stated![1]} 个 provider，但实际列出了 ${ids.length} 个`,
     ).toBe(ids.length)
     // 中国版必须在列（它是本次新增的 provider）

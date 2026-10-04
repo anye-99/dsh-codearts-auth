@@ -55,3 +55,16 @@ process.env.DSH_JET_HUB_STATE_DIR = stateDir
 if (process.env.QODER_RUNTIME_INFO === undefined) {
   process.env.QODER_RUNTIME_INFO = join(stateDir, 'no-such-runtime-info')
 }
+
+/**
+ * Antigravity（Google）的账号池：agy 池（`agy-service.ts` → `src/agy/pool.ts`
+ * 的 `defaultPoolDir()`）解析 `${DSH_STATE_DIR:-~/.dsh}/agy-accounts/`，
+ * 而上面的 `DSH_JET_HUB_STATE_DIR` 管不到它（那条变量只作用于本插件自己的
+ * `jet-hub/state.json`）。不设这个覆盖，单测就会读到开发机真实的 agy 账号池、
+ * 甚至 `bootstrapDefaultAccount` 会往真目录写 primary 槽位 —— `account.list` /
+ * `provider.status` 的结果于是取决于"这台机器装没装 antigravity、登了几个号"。
+ * 指向每个测试文件自己的临时目录即等价于"空池"，正是绝大多数用例要的形态。
+ *
+ * ⚠️ 全仓库只有 `src/agy/pool.ts` 读这个变量（grep 可证），测试里覆盖无副作用。
+ */
+process.env.DSH_STATE_DIR = stateDir

@@ -41,6 +41,8 @@ import {
   groupModelsForDisplay,
 } from './model-groups.js';
 import { formatRowTokensPerSecond } from './tokens-per-second.js';
+import { AntigravityPanel } from './antigravity-panel.js';
+import { DoubaoPanel } from './doubao-panel.js';
 import { decryptBackup, encryptBackup, isEncryptedBackup } from './backup-crypto.js';
 
 export const JET_HUB_RPC_CHANNEL = '/jet-hub';
@@ -213,6 +215,19 @@ const MINIMAX_ICON = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0i
  */
 const ZCODE_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAgklEQVR42u3XsRGAIAyF4UxgYe0g7j+FpZtgRwN36stLAhruqP+v4ICIdNaybsViy92yCj+CeMW7CO94gwgFRMUrIgFTAPbzgPe/Aa5nAInTAGicAtDE1QBtXAVgxGEAeuIpAFYYArDj81xEoQDLd+A1ID8k3wTkXDDEaDbEcBo1nl/XXoK4yMqvMgAAAABJRU5ErkJggg==';
 
+/**
+ * Antigravity 面板图标：内联 SVG 的 base64（与其他面板同法 ——
+ * 客户端 bundle 必须自包含，不能引外部资源）。
+ * 图形取「反重力」意象：一枚上升体加两道尾迹，蓝紫渐变底。
+ */
+const ANTIGRAVITY_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjMjU2M2ViJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjYTg1NWY3Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0ndXJsKCNnKScvPjxwYXRoIGQ9J00xNiA1LjVjMy40IDIuNiA1LjIgNi4zIDUuMiAxMEwxNiAyNWwtNS4yLTkuNWMwLTMuNyAxLjgtNy40IDUuMi0xMHonIGZpbGw9JyNmZmYnLz48Y2lyY2xlIGN4PScxNicgY3k9JzEzLjgnIHI9JzIuMycgZmlsbD0nIzIzM2E4ZicvPjxwYXRoIGQ9J00xMCAyMS41IDYuOCAyN2w1LjYtMi40TTIyIDIxLjUgMjUuMiAyN2wtNS42LTIuNCcgc3Ryb2tlPScjZmZmJyBzdHJva2Utd2lkdGg9JzEuNycgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+PC9zdmc+";
+
+/**
+ * Doubao (豆包) 面板图标：内联 SVG 的 base64。
+ * 遵循路线 C：非凭据型本地客户端联动面板。
+ */
+const DOUBAO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzJBNkJGMicvPjxwYXRoIGQ9J00xNiA2QzEwLjUgNiA2IDEwLjIgNiAxNS41YzAgMy4yIDEuNiA2IDQgNy43VjI2bDMuNi0xLjhjLjguMiAxLjYuMyAyLjQuMyA1LjUgMCAxMC00LjIgMTAtOS41UzIxLjUgNiAxNiA2eicgZmlsbD0nI2ZmZicvPjxjaXJjbGUgY3g9JzEyLjUnIGN5PScxNC41JyByPScxLjUnIGZpbGw9JyMyQTZCRjInLz48Y2lyY2xlIGN4PScxOS41JyBjeT0nMTQuNSIgcj0nMS41JyBmaWxsPScjMkE2QkYyJy8+PHBhdGggZD0nTTEzIDE4Yy44LjggMiAxLjMgMyAxLjNzMi4yLS41IDMtMS4zJyBzdHJva2U9JyMyQTZCRjInIHN0cm9rZS13aWR0aD0nMS41JyBzdHJva2UtbGluZWNhcD0ncm91bmQnIGZpbGw9J25vbmUnLz48L3N2Zz4=";
+
 const PROVIDERS = Object.freeze([
   { id: 'codearts', label: 'CodeArts (华为云)', icon: CODEARTS_ICON, logoClass: 'codearts' },
   { id: 'buddy', label: 'CodeBuddy (腾讯)', icon: CODEBUDDY_ICON, logoClass: 'buddy' },
@@ -247,7 +262,42 @@ const PROVIDERS = Object.freeze([
    * 「弹窗 + 登录轮询」路径。
    */
   { id: 'zcode', label: 'ZCode (智谱)', icon: ZCODE_ICON, logoClass: 'zcode' },
+  /**
+   * Antigravity（Google，第 14 个面板）——**唯一一个不由本插件实现协议的面板**。
+   *
+   * 其余面板都是「本插件自己实现 OAuth + HTTP，凭据进 `ctx.credentials`，
+   * 账号进本插件的账号池」。Antigravity 不成立：它的凭据由**官方 `agy`
+   * 二进制**持有（macOS 在钥匙串里），一个账号 = 一个隔离 HOME 目录，
+   * 因此全部能力都在另一个插件 `dsh-agy-link` 里。
+   *
+   * ⇒ 它的面板是 `AntigravityPanel`（走对面 HTTP 面的同源 fetch），
+   * **不走** `ProviderPanel` / `account.list` / `account.create`。
+   * 也因此它在 A 路线下**没有**：账号启停、拖拽排序、改别名、
+   * 模型显示列表开关、供应商级开关（判据见
+   * `docs/antigravity-jet-hub-integration-plan.md` §2.2）。
+   * 这些按钮不是「还没做」，而是**做了就是假开关**，故一律不渲染。
+   */
+  { id: 'antigravity', label: 'Antigravity (Google)', icon: ANTIGRAVITY_ICON, logoClass: 'antigravity' },
+  /**
+   * Doubao（豆包，字节跳动，第 15 个面板）—— 方案 1 · 路线 C：非凭据型本地客户端联动面板。
+   *
+   * 遵循路线 C 设计规范：仅作本地桌面端状态探测、当前登录 UID 感知与协议一键唤醒面板。
+   * 本插件不持有 Token / Cookie 凭据，完全复用官方客户端自带账号状态。
+   */
+  { id: 'doubao', label: 'Doubao (豆包)', icon: DOUBAO_ICON, logoClass: 'doubao' },
 ]);
+
+/**
+ * Antigravity 面板 id 常量（与 `PROVIDERS` 里的条目、服务端
+ * `ANTIGRAVITY_PROVIDER_ID` 逐字节一致）。
+ * 面板内所有「是不是 agy」的判据都走这个常量，不要各处写字面量。
+ */
+const ANTIGRAVITY_PANEL_ID = 'antigravity';
+
+/**
+ * Doubao 面板 id 常量（与 `PROVIDERS` 里的条目、服务端 `DOUBAO_PROVIDER_ID` 逐字节一致）。
+ */
+const DOUBAO_PANEL_ID = 'doubao';
 
 /**
  * 积分能力判定见 `./credits-capabilities.js`。
@@ -380,7 +430,8 @@ function formatUnits(value, unit) {
 
 /** 单位的展示名（账号卡片上的标签）。 */
 function unitLabel(unit) {
-  return unit === 'token' ? 'Token' : '积分';
+  if (unit === 'token') return 'Token';
+  return '积分';
 }
 
 /**
@@ -523,7 +574,17 @@ function CreditBalanceRow({ balance, error, loading, windowDays, provider }) {
       : null));
 }
 
-function AccountCard({ account, index, order, provider, onToggle, onDelete, onRetest, onReset, onClaimOnboarding, onboardingBusy, busy, credits, creditsLoading, showCredits, showPackageList, windowDays, showRateLimitActions, drag }) {
+/**
+ * 账号卡片（**全面板共享**）。
+ *
+ * 以 **prop 形式**传给 `AntigravityPanel`（而不是让它 import 本文件）——
+ * 理由：`jet-hub.js` 已经 import 了 `antigravity-panel.js`，反向 import 会构成
+ * 循环依赖。Antigravity 是第 14 个面板，它的账号动作（启停/删除/重测/重置/
+ * 排序/改名）与其他 13 家走**同一套标准动词**（服务端在各 case 内按 provider
+ * 分派），故卡片形状必须一致；它独有的维度（主账号槽位 / 隔离目录 / 开终端 /
+ * family 双窗配额）由面板在这张共享卡上**另挂** agy 专属区块（`extra` prop）。
+ */
+function AccountCard({ account, index, order, provider, onToggle, onDelete, onRetest, onReset, onClaimOnboarding, onboardingBusy, busy, credits, creditsLoading, showCredits, showPackageList, windowDays, showRateLimitActions, drag, extra, onRename, extraActions }) {
   const rateLimits = account.modelRateLimits
     ? Object.entries(account.modelRateLimits).filter(([, v]) => v > Date.now())
     : [];
@@ -614,10 +675,20 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
         // 同账号名：hover 出资源包列表（两处都挂，用户 hover 哪个都能看见）。
         title: accountTitle,
       }, account.enabled ? '已启用' : '已停用')),
+    // agy 专属区块（面板传入）：共享卡片**不消费**这些维度，但它们是账号身份
+    // 的一部分（email / 主账号槽位 / 系统 HOME），放在元信息之前显示。
+    extra ?? null,
     React.createElement('dl', { className: 'dim-jh-accountMeta' },
-      React.createElement('div', { className: 'dim-jh-metaRow' },
-        React.createElement('dt', null, '凭据'),
-        React.createElement('dd', null, React.createElement('code', null, account.credentialRef))),
+      // 「凭据」行只对**凭据型**面板有意义。Antigravity 的凭据归官方 agy
+      // 二进制持有（本插件从不写 ctx.credentials），`credentialRef` 为空 ——
+      // 此时**不渲染这一行**，而不是显示一个空的 code（与「不支持积分余额的
+      // provider 不渲染余额行」是同一条准则：与其展示一条无法修复的错误，
+      // 不如不展示）。
+      account.credentialRef
+        ? React.createElement('div', { className: 'dim-jh-metaRow' },
+            React.createElement('dt', null, '凭据'),
+            React.createElement('dd', null, React.createElement('code', null, account.credentialRef)))
+        : null,
       React.createElement('div', { className: 'dim-jh-metaRow' },
         React.createElement('dt', null, '有效期'),
         React.createElement('dd', { 'data-tone': expired ? 'warn' : undefined },
@@ -703,6 +774,34 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
             onClick: () => onReset(account.id),
           }, '重置')
         : null,
+      // 「改名」（写别名）。只有传入 onRename 的面板渲染 —— 当前是
+      // Antigravity：它的 alias 是**账号池里的真实字段**（agy 池自管），
+      // 其余 13 家的展示名来自服务端下发的 nickname，本地改名会被下次
+      // 登录/刷新覆盖，故不渲染这个按钮（避免「改了又变回去」的假开关）。
+      onRename
+        ? React.createElement('button', {
+            className: 'dim-jh-btn dim-jh-iconBtn',
+            title: '修改该账号的显示名（别名保存在账号池里）',
+            'aria-label': '改名',
+            disabled: busy,
+            onClick: () => onRename(account.id, account.nickname || account.id),
+          }, React.createElement('svg', {
+              width: 14,
+              height: 14,
+              viewBox: '0 0 24 24',
+              fill: 'none',
+              stroke: 'currentColor',
+              strokeWidth: 2,
+              strokeLinecap: 'round',
+              strokeLinejoin: 'round',
+              'aria-hidden': 'true',
+              focusable: 'false',
+            },
+              // 铅笔（编辑）：笔身 + 笔尖
+              React.createElement('path', { d: 'M12 20h9' }),
+              React.createElement('path', { d: 'M16.5 2.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z' })))
+        : null,
+      extraActions ?? null,
       React.createElement('button', {
         className: 'dim-jh-btn',
         onClick: () => onToggle(account.id, !account.enabled),
@@ -710,6 +809,12 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
       React.createElement('button', {
         className: 'dim-jh-btn',
         'data-kind': 'danger',
+        // 通用「不可删」机制（Antigravity 的主账号槽位用它）：那个条目对应
+        // 系统 HOME 的 agy 登录态，删掉后下次授权成功也无处挂 email/配额
+        // （2026-10-02 实测链路）。判据由**面板**在账号形状里给（deleteBlocked），
+        // 卡片不写 provider 字面量 —— 与「凭据行为空不渲染」同一取向。
+        disabled: account.deleteBlocked === true,
+        title: account.deleteBlocked === true ? (account.deleteBlockedTitle ?? '该账号不可删除') : undefined,
         onClick: () => onDelete(account.id),
       }, '删除')));
 }
@@ -1154,7 +1259,16 @@ const QUOTA_WINDOWS = Object.freeze([
 /** 额度窗口类型 → 中文标签（未识别时原样返回，不丢弃也不归入「其它」）。 */
 function quotaWindowLabel(type) {
   const known = QUOTA_WINDOWS.find(([id]) => id === type);
-  return known === undefined ? type : known[1];
+  if (known !== undefined) return known[1];
+  // Antigravity 的 family 窗口：后端映射成 `<family>:5h` / `<family>:weekly`
+  // （见 `src/jet-hub-rpc.ts` 的 `subscriptionQuota.get`）。裸类型串对用户
+  // 没有意义（`google:5h`），这里翻译成人话；未知后缀仍原样显示。
+  const familyWindow = /^([a-z-]+):(5h|weekly)$/.exec(String(type ?? ''));
+  if (familyWindow !== null) {
+    const family = familyWindow[1].charAt(0).toUpperCase() + familyWindow[1].slice(1);
+    return `${family} · ${familyWindow[2] === '5h' ? '5 小时' : '本周'}`;
+  }
+  return type;
 }
 
 /**
@@ -1169,7 +1283,7 @@ function quotaWindowsOf(windows) {
     .map(([type, label]) => [type, label, known.get(type)]);
   const extra = windows
     .filter((win) => !QUOTA_WINDOWS.some(([type]) => type === String(win.type)))
-    .map((win) => [String(win.type), String(win.type), win]);
+    .map((win) => [String(win.type), quotaWindowLabel(String(win.type)), win]);
   return [...ordered, ...extra];
 }
 
@@ -1374,16 +1488,23 @@ function StatusDot({ ok, title }) {
  * | | 积分（账号卡片） | 订阅额度 | 请求记录 |
  * |---|---|---|---|
  * | 答什么 | 还剩多少钱 | 各时间窗用掉百分之几 | 本插件发出的每笔请求 |
- * | 来源 | `/users/{id}/balance` | `/users/me/plan/usage-limits` | 本地流水（`src/cline-request-log.ts`） |
+ * | 来源 | `/users/{id}/balance` | `subscriptionQuota.get` | `subscriptionQuota.requestLog` |
  *
  * ## 两个区域的失败语义不同，渲染也必须不同
  *
- * - **额度**（`cline.quota`）：逐账号返回 `ok`。某个账号失败只让**那一张卡**
- *   显示原因，其余账号照常显示 —— 多账号下这是最实用的降级。
- * - **请求记录**（`cline.requestLog`）：失败以 RPC 错误抛出（本地流水不会
- *   部分失败），故 catch 后显示原因并保留空表。
+ * - **额度**（`subscriptionQuota.get`）：逐账号返回 `ok`。某个账号失败只让
+ *   **那一张卡**显示原因，其余账号照常显示 —— 多账号下这是最实用的降级。
+ * - **请求记录**（`subscriptionQuota.requestLog`）：失败以 RPC 错误抛出；
+ *   **该渠道不提供记录时后端如实返回 `note` + 空表**（如 Antigravity：官方
+ *   网关没有逐笔流水），面板显示 note 而不是渲染一个假装支持的空列表 ——
+ *   与 credits.status 对无签到渠道「如实返回 null」同一准则。
+ *
+ * ⚠️ 面板**按 provider 参数化**（原名 ClineQuotaPanel，端点固定写死 'cline'）：
+ * 能力位 `subscriptionQuota` 登记了几家，端点就吃几个 provider —— 前端不做
+ * provider 字面量猜测，窗口类型（Cline 的 five_hour/weekly/monthly 与
+ * Antigravity 的 `<family>:5h/weekly`）全靠 `quotaWindowLabel` 翻译兜住。
  */
-function ClineQuotaPanel({ rpcCall, onClose }) {
+function SubscriptionQuotaPanel({ provider, rpcCall, onClose }) {
   const mounted = React.useRef(true);
   React.useEffect(() => () => { mounted.current = false; }, []);
 
@@ -1407,25 +1528,30 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
   const [logNonce, setLogNonce] = React.useState(0);
 
   const [rows, setRows] = React.useState([]);
+  /** 后端如实回报「该渠道不提供逐笔记录」的说明文案（有值时替代表格显示）。 */
+  const [logNote, setLogNote] = React.useState('');
   const [logPhase, setLogPhase] = React.useState('idle');
   const [logError, setLogError] = React.useState('');
+
+  /** 展示名：弹窗副标题 / aria-label / 文案里代替写死的 "Cline"。 */
+  const providerLabel = PROVIDERS.find(p => p.id === provider)?.label || provider;
 
   const loadQuota = React.useCallback(async () => {
     setQuotaPhase('loading');
     setQuotaError('');
     try {
-      const res = await rpcCall('cline.quota', { provider: 'cline' });
+      const res = await rpcCall('subscriptionQuota.get', { provider });
       if (!mounted.current) return;
       const list = Array.isArray(res?.accounts) ? res.accounts : [];
       setQuota(list);
       setQuotaPhase('ready');
     } catch (caught) {
       if (!mounted.current) return;
-      console.error('[jet-hub] load cline quota failed:', caught);
+      console.error('[jet-hub] load subscription quota failed:', caught);
       setQuotaError(caught?.message || '订阅额度查询失败');
       setQuotaPhase('error');
     }
-  }, [rpcCall]);
+  }, [provider, rpcCall]);
 
   React.useEffect(() => { void loadQuota(); }, [loadQuota]);
 
@@ -1433,18 +1559,20 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
     setLogPhase('loading');
     setLogError('');
     try {
-      const res = await rpcCall('cline.requestLog', { provider: 'cline', accountId });
+      const res = await rpcCall('subscriptionQuota.requestLog', { provider, accountId });
       if (!mounted.current) return;
       // 记录是**本地流水**（一次性返回，无分页），整体替换。
       setRows(Array.isArray(res?.rows) ? res.rows : []);
+      // 「不提供」的渠道（Antigravity）：后端回 note + 空表，如实显示原因。
+      setLogNote(typeof res?.note === 'string' ? res.note : '');
     } catch (caught) {
       if (!mounted.current) return;
-      console.error('[jet-hub] load cline request log failed:', caught);
+      console.error('[jet-hub] load request log failed:', caught);
       setLogError(caught?.message || '请求记录查询失败');
     } finally {
       if (mounted.current) setLogPhase('ready');
     }
-  }, [rpcCall]);
+  }, [provider, rpcCall]);
 
   /** 当前浏览的账号：**渲染期纯计算**，越界钳制但不回写索引（见上）。 */
   const viewAccount = quota.length > 0
@@ -1559,6 +1687,13 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
 
   const renderLog = () => {
     if (viewAccountId === '') return null;
+    // 「该渠道不提供逐笔记录」（Antigravity）：如实显示原因，不渲染空表假装支持。
+    if (logNote !== '') {
+      return React.createElement(
+        'div', { className: 'dim-jh-quotaLog' },
+        React.createElement('h3', { className: 'dim-jh-quotaSectionTitle' }, '请求记录'),
+        React.createElement('p', { className: 'dim-jh-quotaMuted' }, logNote));
+    }
     // 各层先拆成局部变量再组装:createElement 的多参嵌套极易数错括号,
     // 首版就是在这里多/少一层导致 esbuild 语法错(拆开后每层独立可验证)。
     const head = React.createElement(
@@ -1566,7 +1701,7 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
     const hint = React.createElement(
       'p', { className: 'dim-jh-quotaLogHint' },
       '是本插件发出的请求流水（进程内存，重启后清空），不是官方账单 —— '
-      + '官方渠道的消费在 Cline 自己的用量页里。');
+      + '官方渠道的消费在 ' + providerLabel + ' 自己的用量页里。');
     // 5 列:状态点 | 时间 | 模型/上游 | TOKEN | 延迟(参考实现同款)。
     const tableHead = React.createElement(
       'thead', null,
@@ -1686,10 +1821,10 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
    * 既不重复占一行，也不会在单账号下丢失「这是谁的额度」。
    */
   const quotaSubtitle = () => {
-    if (quota.length > 1) return `Cline · ${quota.length} 个账号`;
+    if (quota.length > 1) return `${providerLabel} · ${quota.length} 个账号`;
     const only = quota[0];
-    if (only === undefined) return 'Cline';
-    return `Cline · 账号 ${only.nickname || only.accountId}`;
+    if (only === undefined) return providerLabel;
+    return `${providerLabel} · 账号 ${only.nickname || only.accountId}`;
   };
 
   // 与登录弹窗、模型列表同款：直接渲染在组件树内，靠 position: fixed 覆盖全屏。
@@ -1702,7 +1837,7 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
       className: 'dim-jh-modal',
       role: 'dialog',
       'aria-modal': 'true',
-      'aria-label': 'Cline 订阅额度',
+      'aria-label': `${providerLabel} 订阅额度`,
     },
       React.createElement('div', { className: 'dim-jh-modalHead' },
         React.createElement('div', { className: 'dim-jh-modalTitle' },
@@ -1721,9 +1856,16 @@ function ClineQuotaPanel({ rpcCall, onClose }) {
             onClick: onClose,
           }, '完成'))),
       React.createElement('p', { className: 'dim-jh-modalHint' },
-        '额度窗口来自 Cline 官方网关；请求记录是本插件自己发出的请求流水（重启后清空）。'
-        + '两者与账号卡片上的「积分」是三份不同的读数：积分答「还剩多少」，'
-        + '额度答「各时间窗用掉百分之几」，记录答「每一笔发了多久、花了多少 token」。'),
+        // ⚠️ 文案按 provider 取：Cline 是「网关实时查询 + 本地流水」，
+        // Antigravity 是「账号池缓存的 family 配额（5h 滚动 + 本周）」。
+        // 不给 agy 说「请求记录 / 月窗口」（它两样都没有）。
+        provider === ANTIGRAVITY_PANEL_ID
+          ? '额度窗口为 Antigravity 官方配额（按 google / anthropic / openai 分组，'
+            + '每组「5 小时滚动」与「本周」两个独立窗口）；数据来自账号池的最近一次配额查询，'
+            + '非本地记账。'
+          : '额度窗口来自 ' + providerLabel + ' 官方网关；请求记录是本插件自己发出的请求流水（重启后清空）。'
+            + '两者与账号卡片上的「积分」是三份不同的读数：积分答「还剩多少」，'
+            + '额度答「各时间窗用掉百分之几」，记录答「每一笔发了多久、花了多少 token」。'),
       // ⚠️ 内容**必须**放进 .dim-jh-modalBody（flex:1; min-height:0; overflow-y:auto）。
       // .dim-jh-modal 是 max-height 有限的 flex **列**容器，子项默认不可收缩，
       // 内容直接铺在里面就会**画出弹窗边界之外** —— 首版正是漏了这一层：
@@ -1820,13 +1962,26 @@ function ProviderPanel({ provider, rpcCall }) {
   // 支持每日签到积分的 provider 才渲染领取按钮。
   const supportsCredits = supportsDailyCheckin(provider);
   /**
-   * 「订阅额度」按钮的渲染条件（当前只有 Cline）。
+   * 「订阅额度」按钮的渲染条件（按 `subscriptionQuota` 能力位登记：
+   * Cline 与 Antigravity）。
    *
    * ⚠️ 与 `canLoadCredits` 是**两件不同的事**：`credits.balances` 答「还剩多少」，
    * 订阅额度答「各时间窗用掉百分之几」+ 逐笔请求记录。Cline 两者都有，
    * 但按钮与请求各自独立门控 —— 将来某渠道只加其中之一时不会互相牵连。
    */
   const canShowSubscriptionQuota = supportsSubscriptionQuota(provider);
+  /**
+   * 「订阅额度」按钮的 tooltip（按 provider 取文案）。
+   *
+   * ⚠️ 不能给 Antigravity 说「Cline」或「月窗口」，也不能给它提「逐笔请求记录」
+   *（它只有 5h 滚动 + 本周、且官方网关无逐笔流水）。收成变量而不是写进 JSX，
+   * 是为了让按钮块保持紧凑（`cline-quota-panel.spec.ts` 的门控断言按窗口匹配）。
+   */
+  const subscriptionQuotaTitle = provider === ANTIGRAVITY_PANEL_ID
+    ? '查看 Antigravity 官方配额窗口（google / anthropic / openai 各「5 小时滚动」'
+      + '与「本周」两个独立窗口，用掉百分之几）。数据来自账号池的最近一次配额查询。'
+    : '查看 Cline 官方订阅额度窗口（5 小时 / 周 / 月各用掉百分之几）'
+      + '与逐笔请求记录（模型、token、积分）。数据来自官方网关，非本地记账。';
 
   /**
    * 拉取本页全部账号的积分余额。
@@ -1894,7 +2049,6 @@ function ProviderPanel({ provider, rpcCall }) {
   const [onboardingLoading, setOnboardingLoading] = React.useState(false);
   const [onboardingNotice, setOnboardingNotice] = React.useState(null);
   const canClaimOnboarding = supportsOnboardingTasks(provider);
-
   /**
    * 「锁定永久积分」（**provider 级**开关，持久化在宿主侧）。
    *
@@ -2376,11 +2530,12 @@ function ProviderPanel({ provider, rpcCall }) {
         // 那一行已有 5 个按钮且 `flex-wrap: nowrap`，再塞一个必然溢出
         // （该行的注释里记着「领取新手任务」当时就是这么被挤出去的）。
         // 且额度是**跨账号**的读数，放在面板级与它的语义一致。
+        // ⚠️ title 按 provider 取：不能给 Antigravity 说「Cline」和「月窗口」
+        //（它只有 5h 滚动 + 本周，且没有逐笔请求记录）。
         canShowSubscriptionQuota
           ? React.createElement('button', {
               className: 'dim-jh-btn',
-              title: '查看 Cline 官方订阅额度窗口（5 小时 / 周 / 月各用掉百分之几）'
-                + '与逐笔请求记录（模型、token、积分）。数据来自官方网关，非本地记账。',
+              title: subscriptionQuotaTitle,
               onClick: () => setShowQuota(true),
             }, '订阅额度')
           : null,
@@ -2572,10 +2727,11 @@ function ProviderPanel({ provider, rpcCall }) {
         })
       : null,
     // 「订阅额度」弹窗同样以覆盖层渲染（不挤占账号池版面）。
-    // 不复用 ModelListPanel 的 provider 形参：额度端点当前只认 Cline，
-    // 由 `canShowSubscriptionQuota` 门控按钮，面板内部固定传 'cline'。
+    // ⚠️ **带 provider 形参**（2026-10-02 泛化）：`subscriptionQuota.*` 端点
+    // 按能力位登记多家（Cline / Antigravity），面板内部**不得**再固定传 'cline'。
     showQuota
-      ? React.createElement(ClineQuotaPanel, {
+      ? React.createElement(SubscriptionQuotaPanel, {
+          provider,
           rpcCall,
           onClose: () => setShowQuota(false),
         })
@@ -3447,11 +3603,26 @@ export function JetHubPage({ close, rpcCall }) {
         role: 'tabpanel',
       },
       PROVIDERS.map(p => p.id === selected
-        ? React.createElement(ProviderPanel, {
-            key: p.id + '-' + version,
-            provider: p.id,
-            rpcCall,
-          })
+        // ⚠️ Doubao（方案 1 · 路线 C）与 Antigravity 走独立组件，不进 ProviderPanel。
+        ? (p.id === 'doubao'
+            ? React.createElement(DoubaoPanel, {
+                key: p.id + '-' + version,
+                rpcCall,
+              })
+            : React.createElement(
+                p.id === 'antigravity' ? AntigravityPanel : ProviderPanel,
+                {
+                  key: p.id + '-' + version,
+                  provider: p.id,
+                  rpcCall,
+                  // Antigravity 复用三个共享组件（以 prop 注入，不反向 import ——
+                  // jet-hub.js 已 import 面板文件，反向引用构成循环依赖）：
+                  // 账号卡片 / 显示列表 / 订阅额度，与其余 13 家同一份实现。
+                  AccountCard,
+                  ModelListPanel,
+                  SubscriptionQuotaPanel,
+                },
+              ))
         : null))),
     // 「供应商开关」以 modal 渲染：它是覆盖层，放在布局之后只是组件树的书写顺序
     // （与账号面板里的模型列表同款做法）。关闭即不挂载，避免常驻一份开关列表。

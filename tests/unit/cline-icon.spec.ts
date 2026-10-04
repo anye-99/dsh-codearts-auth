@@ -1,14 +1,38 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-// .mjs 无类型声明，但 tsconfig 只 include `src`、tests 不参与 typecheck，
-// 且 vitest 用 esbuild 转译，故这里直接 import 纯函数是安全的。
-import { decodePng, encodePng, resizeArea } from '../../scripts/extract-cline-icon.mjs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, '../..')
 const JET_HUB_SOURCE = join(REPO_ROOT, 'plugin-src', 'client', 'jet-hub.js')
+
+/**
+ * ⚠️ 提取脚本**不在仓库里**，故**不能**用静态 `import`。
+ *
+ * `.gitignore` 的 `scripts` 行是有意排除这类「产物提取 / 只读排查」脚本的
+ * （见 AGENTS.md「`scripts/` 里哪些入库、哪些不入库」），所以新克隆的仓库里
+ * `scripts/extract-cline-icon.mjs` **不存在**。
+ * 顶层静态 `import` 一旦解析失败，**整份套件会变成 Failed Suite** ——
+ * 连下面那些**不依赖它**的 PNG 结构断言也会一起挂掉（2026-10-04 实测到）。
+ *
+ * 故改为「存在才加载」的动态导入：脚本缺失时，仅把依赖它的两条用例
+ * 干净跳过（与「未安装 Cline」同一种降级方式），其余断言照常执行。
+ */
+const EXTRACT_SCRIPT = join(REPO_ROOT, 'scripts', 'extract-cline-icon.mjs')
+const hasExtractScript = existsSync(EXTRACT_SCRIPT)
+
+/** 提取脚本导出的纯函数（缺失时为 null，调用点一律在 `skipIf` 之后）。 */
+const extractor: {
+  decodePng(bytes: Uint8Array): { width: number; height: number; rgba: Uint8Array }
+  encodePng(rgba: Uint8Array, width: number, height: number, filter?: string): Uint8Array
+  resizeArea(
+    rgba: Uint8Array, width: number, height: number, targetWidth: number, targetHeight: number,
+  ): Uint8Array
+} | null = hasExtractScript
+  // `pathToFileURL` 是 Windows 上必需的（裸盘符路径不是合法 ESM specifier）。
+  ? await import(pathToFileURL(EXTRACT_SCRIPT).href)
+  : null
 
 /**
  * Cline 面板图标的回归测试。
@@ -66,10 +90,14 @@ describe('Cline 面板图标（必须来自官方提取，不得手绘）', () =
     expect(bytes.length).toBeGreaterThan(1_000)
   })
 
-  it('能被提取脚本自己的解码器读回（编码/解码自洽）', () => {
+  /**
+   * ⚠️ 需要 `scripts/extract-cline-icon.mjs`（**不入库**，见文件头）。
+   * 缺失时干净跳过 —— 而不是让整份套件失败。
+   */
+  it.skipIf(extractor === null)('能被提取脚本自己的解码器读回（编码/解码自洽）', () => {
     const uri = readIconDataUri()
     const bytes = Buffer.from(uri.slice('data:image/png;base64,'.length), 'base64')
-    const decoded = decodePng(bytes)
+    const decoded = extractor!.decodePng(bytes)
     expect(decoded.width).toBe(48)
     expect(decoded.height).toBe(48)
     expect(decoded.rgba.length).toBe(48 * 48 * 4)
@@ -92,23 +120,27 @@ describe('Cline 面板图标（必须来自官方提取，不得手绘）', () =
   const officialClassic = join(appDir, 'icons', 'app', 'macos', 'classic.png')
   const hasOfficialSource = existsSync(officialClassic)
 
-  it.skipIf(!hasOfficialSource)(
+  it.skipIf(!hasOfficialSource || extractor === null)(
     '与「从官方 classic.png 重新提取」的结果逐字节一致',
     () => {
       // 惰性读取（见文件头注释：收集阶段读文件会让 skip 变成 Failed Suite）
-      const source = decodePng(readFileSync(officialClassic))
-      const regenerated = encodePng(
-        resizeArea(source.rgba, source.width, source.height, 48, 48), 48, 48, 'paeth',
+      const source = extractor!.decodePng(readFileSync(officialClassic))
+      const regenerated = extractor!.encodePng(
+        extractor!.resizeArea(source.rgba, source.width, source.height, 48, 48), 48, 48, 'paeth',
       )
       const inlined = Buffer.from(readIconDataUri().slice('data:image/png;base64,'.length), 'base64')
       expect(inlined.equals(regenerated), '内联图标与官方源提取结果不一致（图标可能被改坏）').toBe(true)
     },
   )
 
-  it('官方图标源缺失时明确记录（便于解释为何上面的用例被跳过）', () => {
+  it('提取脚本 / 官方图标源缺失时明确记录（便于解释为何上面的用例被跳过）', () => {
+    if (!hasExtractScript) {
+      console.log(`\n[cline-icon] 未找到提取脚本：${EXTRACT_SCRIPT}\n  → 依赖它的用例已跳过（该脚本不入库，属预期情况）。`)
+    }
     if (!hasOfficialSource) {
       console.log(`\n[cline-icon] 未找到官方图标源：${officialClassic}\n  → 逐字节比对用例已跳过；如需校验请安装 Cline 或设置 CLINE_APP_DIR。`)
     }
     expect(typeof hasOfficialSource).toBe('boolean')
+    expect(typeof hasExtractScript).toBe('boolean')
   })
 })

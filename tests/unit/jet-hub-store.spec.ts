@@ -307,7 +307,30 @@ describe('文件后端（FileStore）', () => {
     // 防「正则该更新了却静默取到 0 项」这类假绿。
     expect(providerIds.length).toBeGreaterThan(0)
 
-    const refs = providerIds.map(
+    /**
+     * ⚠️ `antigravity` 与 `doubao` 是**仅有的两个**不参与凭据恢复的 provider，
+     * 且这是刻意的排除，不是本表历史上那三次「漏加 ⇒ 账号静默消失」的第四次。
+     *
+     * `antigravity`：它的凭据归官方 `agy` 二进制（macOS 钥匙串 / Windows USERPROFILE），
+     * 一个账号 = 另一个插件（`dsh-agy-link`）里的一个隔离 HOME 目录；
+     * 本插件从不写 `ANTIGRAVITY_ACCOUNT_*` 这类 ref。
+     * ⇒ 若照惯例把它补进恢复表，`state.json` 丢失时反而会**凭空造出一个
+     * 指向空气的账号条目**：面板显示"有 1 个账号"，任何操作都失败，
+     * 而真账号其实在对面插件里。
+     *
+     * `doubao`：路线 C 的本地客户端联动面板（`src/doubao-product.ts`），
+     * 同样**没有** `ctx.credentials` 条目、从不写 `DOUBAO_ACCOUNT_*`。
+     * ⇒ 补进恢复表会造出指向空气的账号。
+     *
+     * 两个排除各由下面两条独立用例钉死（确保真被排除、且不会误吞同名 ref）。
+     */
+    const NON_RECOVERABLE = ['antigravity', 'doubao']
+    const recoverable = providerIds.filter((id) => !NON_RECOVERABLE.includes(id))
+    // 排除必须**真的**排掉对应项数：否则将来客户端正则失配（拿不到这两个）
+    // 时这个 filter 静默无事发生，恢复表覆盖度也就悄悄少了几家。
+    expect(recoverable.length).toBe(providerIds.length - NON_RECOVERABLE.length)
+
+    const refs = recoverable.map(
       (id, index) => `${id.toUpperCase()}_ACCOUNT_${(index + 1).toString(16).toUpperCase().padStart(6, '0')}`,
     )
     writeFileSync(
@@ -318,8 +341,47 @@ describe('文件后端（FileStore）', () => {
 
     const recovered = createJetHubStore(makeCtx(undefined)).load()?.accounts ?? []
     expect(recovered.map(a => [a.provider, a.credentialRef])).toEqual(
-      providerIds.map((id, index) => [id, refs[index]!]),
+      recoverable.map((id, index) => [id, refs[index]!]),
     )
+  })
+
+  /**
+   * 上一条用例**排除**了 antigravity，这条负责证明排除是真的：
+   * 恢复表里没有它 ⇒ 即使凭据库里出现 `ANTIGRAVITY_ACCOUNT_*`（手工加的、
+   * 或将来某个同名 ref），也不会被恢复成账号条目。
+   *
+   * 反向验证：把 `['ANTIGRAVITY', 'antigravity']` 加进
+   * `src/jet-hub-store.ts` 的 `REF_PREFIX_TO_PROVIDER`，本用例即红 ——
+   * 那正是"看起来补全了、实际造出假账号"的那一步。
+   */
+  it('antigravity 不参与凭据恢复（没有 ANTIGRAVITY_ACCOUNT_* 这种 ref）', () => {
+    writeFileSync(
+      join(dir, '.credentials.yaml'),
+      ['refs:', "  ANTIGRAVITY_ACCOUNT_ABCDEF: '{}'", 'records: {}'].join('\n'),
+      'utf-8',
+    )
+
+    const recovered = createJetHubStore(makeCtx(undefined)).load()?.accounts ?? []
+    expect(recovered.filter(a => a.provider === 'antigravity')).toEqual([])
+  })
+
+  /**
+   * 与上一条同型（2026-10-04 接入 doubao 时补）：
+   * `doubao` 是路线 C 的本地客户端联动面板，**没有** `ctx.credentials` 条目，
+   * 本插件从不写 `DOUBAO_ACCOUNT_*`。故恢复表也不该含它 ——
+   * 否则 `state.json` 丢失时会凭空造出指向空气的账号。
+   *
+   * 反向验证：把 `['DOUBAO', 'doubao']` 加进 `REF_PREFIX_TO_PROVIDER`，本用例即红。
+   */
+  it('doubao 不参与凭据恢复（没有 DOUBAO_ACCOUNT_* 这种 ref）', () => {
+    writeFileSync(
+      join(dir, '.credentials.yaml'),
+      ['refs:', "  DOUBAO_ACCOUNT_ABCDEF: '{}'", 'records: {}'].join('\n'),
+      'utf-8',
+    )
+
+    const recovered = createJetHubStore(makeCtx(undefined)).load()?.accounts ?? []
+    expect(recovered.filter(a => a.provider === 'doubao')).toEqual([])
   })
 
   /**

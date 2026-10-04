@@ -285,6 +285,20 @@ const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   // ⚠️ 第 12 个 provider（上游 2026-10-02 合并）—— 曾漏加，见上方注释 ②。
   ['MINIMAX', 'minimax'],
   ['ZCODE', 'zcode'],
+  // ⚠️⚠️ 第 14 个面板 **Antigravity 故意不在本表** —— 这不是第四次漏加。
+  //
+  // 上方三条教训都是「漏加 ⇒ 账号静默消失」；antigravity 相反：它**不该**被恢复。
+  // 它的凭据由官方 `agy` 二进制持有（macOS 钥匙串 / Windows USERPROFILE），
+  // 一个账号 = 对面插件 `dsh-agy-link` 里的一个**隔离 HOME 目录**，
+  // 本插件从不写 `ANTIGRAVITY_ACCOUNT_*` 这类 ref。
+  //
+  // ⇒ 若照惯例补一行 `['ANTIGRAVITY', 'antigravity']`，恢复逻辑就会在
+  // `state.json` 缺失时**凭空造出**指向空气的账号条目（若哪天有同名 ref 的话），
+  // 用户看到"有账号"却全部不可用。它的账号列表由 `antigravity` 服务
+  // （`agy-service.ts` 的 agy 池）承载，账号/登录/配额走 jet-hub RPC 的
+  // 标准动词分派（见 `src/jet-hub-rpc.ts` 的 antigravity 注释块与
+  // `plugin-src/client/antigravity-api.js`）。
+  // 该排除由 `jet-hub-store.spec.ts` 的「antigravity 不参与凭据恢复」钉死。
 ]
 
 /** 账号凭据 ref 形态：`{PREFIX}_ACCOUNT_{HEX}`（前缀由单一真相源派生）。 */

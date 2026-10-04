@@ -1,0 +1,281 @@
+// PoolAuthFlow: self-owned Google OAuth lifecycle for adding pool accounts.
+//
+// Replaces the old "spawn agy -p ping and scrape a login URL" probe, which
+// silently broke when agy >= 1.1.15 stopped printing auth URLs in print
+// mode (the probe then timed out and the route reported success anyway —
+// the UI claimed "browser opened" while nothing ever happened).
+//
+// Flow: create staging slot -> PKCE authorize URL -> loopback callback
+// listener + server-side browser open -> automatic code capture ->
+// exchange -> write agy-format token file into the staging HOME -> verify
+// via fetchAvailableModels/userinfo -> commit into the pool. Manual code
+// (or redirect URL) paste is the fallback when the listener cannot bind.
+import { randomBytes } from 'node:crypto'
+import {
+  buildAuthorizeUrl,
+  exchangeCode,
+  fetchUserEmail,
+  generatePkce,
+  openBrowser,
+  parsePastedCode,
+  startCallbackListener,
+  writeAgyTokenFile,
+  type CallbackHandle,
+} from './oauth.js'
+import type { AccountPoolManager } from './pool.js'
+import type { QuotaService } from './quota.js'
+import { writeWindowsCredentialToken } from './quota.js'
+
+export type PoolAuthPhase = 'idle' | 'waiting' | 'exchanging' | 'done' | 'failed'
+export type PoolAuthStatusCode =
+  | 'browser_manual'
+  | 'callback_failed'
+  | 'no_active_flow'
+  | 'invalid_code'
+  | 'invalid_state'
+  | 'exchange_failed'
+  | 'primary_activated'
+  | 'account_activated'
+  | 'missing_code'
+  | 'request_failed'
+
+export interface PoolAuthStatus {
+  phase: PoolAuthPhase
+  stagingId?: string
+  alias?: string
+  url?: string
+  /** 'auto' = loopback listener live; 'manual' = paste the code/URL back. */
+  mode?: 'auto' | 'manual'
+  browserOpened?: boolean
+  /** Stable, locale-neutral user-facing state. Raw diagnostic details never leave the host. */
+  code?: PoolAuthStatusCode
+}
+
+interface ActiveFlow {
+  stagingId: string
+  dir: string
+  alias?: string
+  proxyUrl?: string
+  verifier: string
+  state: string
+  url: string
+  mode: 'auto' | 'manual'
+  listener: CallbackHandle | null
+  /** Primary/system-HOME login: no staging slot, writes to the real HOME. */
+  primary?: boolean
+}
+
+const DONE_STATUS_TTL_MS = 30_000
+
+export interface PoolAuthFlowDeps {
+  /** Injectable for tests; defaults to the OS browser open. */
+  openBrowser?: (url: string) => Promise<boolean>
+}
+
+export class PoolAuthFlow {
+  private flow: ActiveFlow | null = null
+  private statusValue: PoolAuthStatus = { phase: 'idle' }
+  private doneResetTimer: NodeJS.Timeout | null = null
+  private readonly open: (url: string) => Promise<boolean>
+
+  constructor(
+    private readonly pool: AccountPoolManager,
+    private readonly quota: QuotaService,
+    private readonly log: (msg: string) => void = () => {},
+    deps: PoolAuthFlowDeps = {},
+  ) {
+    this.open = deps.openBrowser ?? openBrowser
+  }
+
+  status(): PoolAuthStatus {
+    return { ...this.statusValue }
+  }
+
+  private setStatus(patch: Partial<PoolAuthStatus> & { phase: PoolAuthPhase }): void {
+    if (this.doneResetTimer) {
+      clearTimeout(this.doneResetTimer)
+      this.doneResetTimer = null
+    }
+    this.statusValue = { ...this.statusValue, ...patch }
+    if (patch.phase === 'done') {
+      // Hold the success state briefly so pollers see it, then reset.
+      this.doneResetTimer = setTimeout(() => {
+        if (this.statusValue.phase === 'done') this.statusValue = { phase: 'idle' }
+      }, DONE_STATUS_TTL_MS)
+    }
+  }
+
+  /**
+   * Shared starter: PKCE + loopback listener + server-side browser open.
+   * Never reports success without a URL; bind failure degrades to manual
+   * paste mode instead of pretending the browser opened.
+   */
+  private async startFlow(flow: Omit<ActiveFlow, 'verifier' | 'state' | 'url' | 'mode' | 'listener'>): Promise<PoolAuthStatus & { ok: boolean; dir?: string }> {
+    await this.abortActive()
+
+    const { verifier, challenge } = generatePkce()
+    const state = randomBytes(16).toString('base64url')
+    const url = buildAuthorizeUrl(challenge, state)
+
+    // startCallbackListener signals bind errors by rejecting `result`;
+    // give the listener one tick to bind before declaring auto mode.
+    let listener: CallbackHandle | null = startCallbackListener()
+    let bindFailed = false
+    await Promise.race([
+      listener.result.then(
+        () => {},
+        () => {
+          bindFailed = true
+        },
+      ),
+      new Promise((resolve) => setTimeout(resolve, 300)),
+    ])
+    if (bindFailed) {
+      await listener.close().catch(() => undefined)
+      listener = null
+    }
+    const mode: 'auto' | 'manual' = listener ? 'auto' : 'manual'
+
+    const browserOpened = await this.open(url)
+
+    const active: ActiveFlow = { ...flow, verifier, state, url, mode, listener }
+    this.flow = active
+    this.setStatus({
+      phase: 'waiting',
+      stagingId: active.stagingId,
+      alias: active.alias,
+      url,
+      mode,
+      browserOpened,
+      code: browserOpened ? undefined : 'browser_manual',
+    })
+    this.log(`pool auth begun (${mode} mode, browserOpened=${browserOpened}${active.primary ? ', primary' : ''})`)
+
+    if (listener) {
+      void listener.result
+        .then(({ code, state: returnedState }) => this.finishWithCode(code, returnedState))
+        .catch((err: unknown) => {
+          if (!this.flow || this.flow.listener !== listener) return
+          this.fail('callback_failed', err)
+        })
+    }
+
+    return { ok: true, ...this.statusValue, dir: active.dir }
+  }
+
+  /** Begin adding a pool account (isolated staging HOME). */
+  async begin(alias?: string, proxyUrl?: string): Promise<PoolAuthStatus & { ok: boolean; dir?: string }> {
+    const staging = this.pool.createStagingSlot()
+    return this.startFlow({ stagingId: staging.id, dir: staging.dir, alias, proxyUrl })
+  }
+
+  /**
+   * Begin logging in the PRIMARY account (system HOME, no staging slot):
+   * same browser flow, tokens land in ~/.gemini so the real agy stays signed in.
+   *
+   * ⚠️ 必须能带代理：exchangeCode / fetchUserEmail 直连 Google OAuth 端点，
+   * 无代理环境下这两步必然超时 —— 用户走完授权页却在换码一步失败
+   * （2026-10-02 实测本机直连 oauth2.googleapis.com 超时）。
+   * 调用方（RPC）未显式传时回落到主账号已存的 proxyUrl。
+   */
+  async beginPrimary(proxyUrl?: string): Promise<PoolAuthStatus & { ok: boolean; dir?: string }> {
+    const { homedir } = await import('node:os')
+    return this.startFlow({ stagingId: 'acc_primary', dir: homedir(), primary: true, ...(proxyUrl ? { proxyUrl } : {}) })
+  }
+
+  /** Manual paste fallback: accepts a bare code or the full redirect URL. */
+  async submitCode(input: string): Promise<PoolAuthStatus & { ok: boolean }> {
+    const flow = this.flow
+    if (!flow || this.statusValue.phase !== 'waiting') {
+      return { ok: false, phase: this.statusValue.phase, code: 'no_active_flow' }
+    }
+    const parsed = parsePastedCode(input)
+    if (!parsed) {
+      return { ok: false, phase: 'waiting', code: 'invalid_code' }
+    }
+    if (parsed.state && parsed.state !== flow.state) {
+      return { ok: false, phase: 'waiting', code: 'invalid_state' }
+    }
+    await this.finishWithCode(parsed.code, parsed.state ?? flow.state)
+    const after = this.status()
+    return { ...after, ok: after.phase === 'done' }
+  }
+
+  private async finishWithCode(code: string, returnedState: string): Promise<void> {
+    const flow = this.flow
+    if (!flow || this.statusValue.phase !== 'waiting') return
+    if (returnedState !== flow.state) {
+      this.fail('invalid_state')
+      return
+    }
+    this.setStatus({ phase: 'exchanging' })
+    try {
+      const tokens = await exchangeCode(code, flow.verifier, flow.proxyUrl)
+      writeAgyTokenFile(flow.dir, tokens)
+      // ⚠️ Windows 主账号：凭据管理器优先于文件（quota.getStoredToken），
+      // 不写回 CredWrite 的话，旧过期条目会**遮蔽这次新登录** —— 用户走完
+      // 授权流程却仍被登录门控判定未登录（2026-10-02 报障链路的一环）。
+      if (flow.primary) {
+        writeWindowsCredentialToken({
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          expiryMs: tokens.expiryMs,
+        })
+      }
+      const email = await fetchUserEmail(tokens.access_token, flow.proxyUrl)
+      if (flow.primary) {
+        // System-HOME login: update the primary account in place, never
+        // stage/commit and NEVER delete the real home directory.
+        // ⚠️ 用 ensurePrimaryAccount 自愈：主账号卡片可能在面板里被删掉
+        // （deleteAccount 后 bootstrap 不会重跑），那时登录成功却无处挂
+        // email/配额，面板显示「还没有账号」—— 用户以为登录失败
+        // （2026-10-02 实测链路：17:18 删卡 → 17:19 授权成功却无账号）。
+        const primary = this.pool.ensurePrimaryAccount()
+        this.pool.updateAccountQuotas(primary.id, primary.quotas, email)
+        void this.quota.refreshAccountQuota(primary).catch(() => undefined)
+        this.log(`primary account signed in${email ? ` <${email}>` : ''}`)
+        this.flow = null
+        if (flow.listener) void flow.listener.close().catch(() => undefined)
+        this.setStatus({ phase: 'done', alias: email, code: 'primary_activated' })
+        return
+      }
+      const acc = this.pool.commitStagingAccount(flow.stagingId, flow.dir, flow.alias, email, flow.proxyUrl)
+      this.log(`pool auth committed account ${acc.id}${email ? ` <${email}>` : ''}`)
+      // Quota refresh is best-effort; the account is usable regardless.
+      void this.quota.refreshAccountQuota(acc).catch(() => undefined)
+      this.flow = null
+      if (flow.listener) void flow.listener.close().catch(() => undefined)
+      this.setStatus({ phase: 'done', alias: acc.alias, code: 'account_activated' })
+    } catch (err) {
+      this.fail('exchange_failed', err)
+    }
+  }
+
+  private fail(code: PoolAuthStatusCode, detail?: unknown): void {
+    const flow = this.flow
+    // The existing host diagnostic sink may retain raw failure detail; never
+    // return it through the customer-facing HTTP/status contract.
+    this.log(`pool auth failed [${code}]${detail ? `: ${detail instanceof Error ? detail.message : String(detail)}` : ''}`)
+    if (flow) {
+      if (flow.listener) void flow.listener.close().catch(() => undefined)
+      // Never delete the real HOME of a primary login attempt.
+      if (!flow.primary) this.pool.cleanupStagingSlot(flow.dir)
+      this.flow = null
+    }
+    this.setStatus({ phase: 'failed', code })
+  }
+
+  async cancel(): Promise<PoolAuthStatus & { ok: boolean }> {
+    await this.abortActive()
+    this.setStatus({ phase: 'idle' })
+    return { ok: true, phase: 'idle' }
+  }
+
+  private async abortActive(): Promise<void> {
+    const flow = this.flow
+    if (!flow) return
+    this.flow = null
+    if (flow.listener) await flow.listener.close().catch(() => undefined)
+    if (!flow.primary) this.pool.cleanupStagingSlot(flow.dir)
+  }
+}

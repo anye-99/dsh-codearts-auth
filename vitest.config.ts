@@ -37,6 +37,7 @@ export default defineConfig({
     setupFiles: ['./tests/setup-isolation.ts'],
     env: {
       DSH_JET_HUB_STATE_DIR: fallbackStateDir,
+      DSH_STATE_DIR: fallbackStateDir,
       QODER_RUNTIME_INFO: noSuchRuntimeInfo,
     },
   },

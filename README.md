@@ -6,7 +6,7 @@ deepseek-harness 插件：执行 CodeArts（华为云）登录流程，默认走
 为显式回退（`flow: 'ticket'`）。插件还注册一个 `codearts` LLM provider 路由，使该
 凭证可直接用于 CodeArts 后端模型调用。
 
-此外插件内置另外十个 provider 路由（完整清单见 [LLM provider](#llm-provider)）；
+此外插件内置另外十二个 provider 路由（完整清单见 [LLM provider](#llm-provider)）；
 其中带积分能力的几个：
 
 - **buddy（腾讯 CodeBuddy）** — 见 [buddy provider](#buddy-provider)；
@@ -27,12 +27,17 @@ deepseek-harness 插件：执行 CodeArts（华为云）登录流程，默认走
   **首个 Anthropic Messages 协议族**的 provider；
   支持积分余额与每日签到，**推理已启用**（Anthropic Messages，
   4 个模型实测通过；⚠️ 图片输入未实现）。
+- **antigravity（Google Antigravity / 官方 `agy` CLI）** — 见
+  [Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)；
+  **唯一一个不由本插件持有凭据的面板**（凭据归官方 `agy` 二进制、
+  一个账号 = 一个隔离 HOME 目录）；支持多账号池、family 配额双窗
+  （5 小时滚动 + 本周）与限流自动切号。
 
 `codearts` 面板同样支持**积分账户检测、积分余额与「一键领取积分」**
 （华为云「每日签到得积分」活动，走 `SDK-HMAC-SHA256` 签名）——
 见 [CodeArts 积分](#codearts-积分华为云每日签到得积分)。
 
-十一个 provider 的 Jet Hub 面板都提供「**显示列表**」按钮，可逐个开关模型以控制其
+十三个 provider 面板（含 antigravity）都提供「**显示列表**」按钮，可逐个开关模型以控制其
 是否出现在对话框的模型选择里（黑名单制，默认全部显示）——
 见 [模型列表开关](#模型列表开关黑名单)。
 
@@ -158,7 +163,7 @@ Tokens 福利）。
 凭据来自默认的新式 IAM OAuth 流程（含 `refresh_token`）。请求发起时会解析最新
 凭据，若已过期则先静默续期，再用新 AK/SK/SecurityToken 签名，无需重新打开浏览器。
 
-除 `codearts` 外，插件另注册十个独立的 provider 路由：`buddy`（见
+除 `codearts` 外，插件另注册十二个独立的 provider 路由：`buddy`（见
 [buddy provider](#buddy-provider)）、`workbuddy`（见
 [WorkBuddy provider](#workbuddy-provider)）、`lobsterai`（见
 [LobsterAI provider](#lobsterai-provider有道龙虾)）、`qoder`（见
@@ -168,8 +173,14 @@ Tokens 福利）。
 [Cline provider](#cline-provider)）、`loomy`（见
 [Loomy provider](#loomy-provider讯飞办公助手)）、`raccoon`（见
 [Raccoon Work provider](#raccoon-work-provider商汤小浣熊)）、`minimax`（见
-[MiniMax Code provider](#minimax-code-provider中国版)）与 `zcode`（见
-[ZCode provider](#zcode-provider智谱-zai-免费额度)）。十二者互不覆盖，可同时使用。
+[MiniMax Code provider](#minimax-code-provider中国版)）、`zcode`（见
+[ZCode provider](#zcode-provider智谱-zai-免费额度)）与 `antigravity`（见
+[Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)）。十三者互不覆盖，可同时使用。
+
+> **历史**：2026-10-01 曾接入 `vibex`（RunningHub 的 vibe-coding 平台）作为一个
+> **非 LLM 面板**（OAuth 账号 + Remote MCP 工具挂载，无补全端点）；2026-10-02
+> 应要求**整块移除**。相关设计要点保留在 AGENTS.md 的「VibeX 维护要点」里，
+> 仅作将来重新评估时的参考，代码与面板均已不存在。
 
 ## 凭证
 
@@ -2316,6 +2327,72 @@ ZCode 免费通道**只认 Anthropic Messages**（实测 `zcode-plan` 下的
 ⚠️ 两个最容易踩的：`tool_use.input` 是**对象**（不是 JSON 字符串）；
 工具结果必须包成 `role:'user'` 里的 `tool_result` 块。
 
-⚠️ **空响应必须显式抛 `EMPTY_RESPONSE`** —— Anthropic SSE 没有 `[DONE]`
-可做锚点，若不检查就会「干净地停止、无任何报错」
-（与 Qoder 那次静默失败的形态完全一致）。
+## Antigravity provider（Google `agy` CLI·非凭据型）
+
+`antigravity` 是第 14 个面板、第 12 个 LLM 路由（除 `codearts` 外），也是
+**唯一一个不由本插件持有凭据的**：推理与登录态都经由 **Google 官方 `agy` CLI
+二进制**（[官方安装文档](https://antigravity.google/docs/cli/install)），
+token 存在系统钥匙串（macOS `gemini:antigravity`）/ Windows 凭据管理器 /
+Linux Keyring 里，由官方二进制自管 —— 本插件**从不读写这些凭据**，只 spawn
+`agy` 并读取它的输出流。
+
+### 账号模型（与其余 13 家的结构性差别）
+
+| | 其余 13 家 | Antigravity |
+|---|---|---|
+| 凭据 | `ctx.credentials`（可序列化 token） | 官方 `agy` 二进制持有 |
+| 一个账号 | 一份凭据 | 一个**隔离 HOME 目录**（主账号骑真实系统 HOME） |
+| 账号池 | `~/.dsh/jet-hub/state.json` | `~/.dsh/agy-accounts/pool.json` |
+| 登录 | 两步式：URL + 服务端回调轮询 | PKCE + loopback 自动捕获；失败降级**人工粘授权码** |
+| 续期 | 本插件发起 | 官方二进制自续期（本插件只读配额） |
+| 额度 | 积分余额 / 每日签到 | **family 配额双窗**：google/anthropic/openai 各「5 小时滚动 + 本周」 |
+
+因此它**刻意不进**凭据恢复表（`REF_PREFIX_TO_PROVIDER`）与账号备份：
+隔离 HOME 目录不是可搬运的凭据；若照惯例补恢复行，状态文档丢失时会
+凭空造出指向空气的账号（用例双向钉死）。
+
+### 接入一致性（2026-10-02 对齐）
+
+面板动作与其余面板**同走标准 Jet Hub 动词**（服务端在各 case 内按 provider
+分派）：`account.list/create/update/delete/reorder/refresh/retest*/reset*`、
+`login.poll`、`model.list`（显示列表，黑名单真实生效）、`provider.setEnabled`
+（供应商开关真实生效）、`subscriptionQuota.get`（订阅额度弹窗，family 双窗
+映射成标准额度卡；逐笔请求记录该渠道不提供，后端如实回原因）。
+只有无标准对应物的动作走 `antigravity.*` 扩展动词（粘码 / 取消 / 主账号登录 /
+慢探针 / 状态快照 / 设主号 / 取号模式 / 代理 / 开终端）。
+
+### 面板要点
+
+- **休眠 ≠ 未登录**：`agy` 二进制缺失或版本过旧时顶栏显示「休眠：…」，
+  不显示成「未登录」（那会诱导用户点一个必然失败的登录）。
+- **主账号 vs 副账号**：主账号卡片打「系统 HOME / 主账号」标，
+  「开终端」「删除」对它禁用（它是真实 HOME 登录态的唯一槽位，
+  退出登录的正确动作是终端里 `agy logout`）。
+- **取号模式**：`sequential`（按 family 粘性用尽）↔ `round-robin`（轮询）；
+  限流（family cooldown）自动切下一个可用账号。
+- **默认思考档位**（面板可调）：`跟随模型默认` / 低 / 中 / 高 / 最大。
+  ⚠️ 只决定**模型目录未钉死档位时**的兜底值 —— 在 DSH 的模型选择器里选的档位
+  始终优先。不设时适配器走 `high → medium → low` 阶梯（即 **high**，最慢）；
+  flash 系列想更快就把默认降到「低」或「中」。设置落在
+  `~/.dsh/agy-accounts/settings.json`（agy 自有目录，**不进**共享的
+  `jet-hub/state.json` —— 那是另外 12 家共用的文档，为一家偏好改它的 schema
+  与三个后端不划算）。
+- **推理是流式的**（2026-10-03 修复）：正文随 agy 的 NDJSON 事件**边到边**推送，
+  不再是"等整段生成完再一次性出现"。若发现又变成一次性蹦出，先查
+  `antigravity-adapter.ts` 的 `onLine` 是否退化回 `await outcome` 全量解析
+  （`antigravity-streaming.spec.ts` 的时序断言会红）。
+- **两条耗时不同的通道**：面板轮询读毫秒级内存快照；「刷新」按钮是慢探针
+  （真探登录态 + `agy models` 目录发现，未登录时约 15 秒，属真实耗时）。
+- **重测所有会绕过保守闸门**：后台配额轮询自动跳过冷却中/待重登账号，
+  手动「重测/刷新配额」不会 —— 别把风控暴露面当便利功能高频点击。
+
+### 能力边界（如实声明）
+
+- 推理是**单轮代理**：每次调用把可见历史摘要 + 尾部 user 消息喂给
+  `agy -p`，无跨调用会话绑定；多模态（图片）暂不支持，只透传文本。
+- 不参与积分余额 / 每日签到 / 备份导入导出。
+
+排查与验证：e2e 探针 `pnpm test:e2e:antigravity`（只读，需装好 `agy`
+并完成一次官方登录；默认跳过），实现细节与事故记录见
+`docs/antigravity-jet-hub-integration-plan.md` 与 AGENTS.md 的
+「Antigravity 接入维护要点」。

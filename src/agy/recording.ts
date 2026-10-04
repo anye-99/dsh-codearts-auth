@@ -1,0 +1,281 @@
+﻿// RunRecording — the durable spine of native tool mirroring (v0.3).
+//
+// One agy child process maps to ONE recording. The process pump appends every
+// normalized AgyEvent here; each DSH model call (a "span") consumes events
+// monotonically from a message-derived cursor and stops at the next cut point
+// (a completed tool step), emitting a native tool-call block + finish:tool-calls.
+// DSH then dispatches the registered agy_tool mirror, which reads the recorded
+// output by callId — so the tool card, its pending/result styling, and the
+// turn/step bookkeeping all come from DSH's own machinery, not from text
+// annotations (the v0.2.8/v0.2.9 presentations the user rejected).
+//
+// Event indices are append-only and stable, so callIds of the form
+// `agytc-<runId>-<eventIndex>` are enough to re-derive a span cursor from the
+// DSH message list alone — retries and replays stay idempotent with no
+// mutable per-stream state.
+import { randomUUID } from 'node:crypto'
+import type { AgyEvent, RawUsage } from './types.js'
+
+/** Terminal failure recorded when the process ended without a usable result. */
+export interface RecordingFailure {
+  kind: 'error' | 'aborted'
+  code: string
+  message: string
+}
+
+/** Status guidance only: retain the original tool error for replay and logs. */
+export type ToolErrorKind = 'missing_file' | 'system_protection' | 'approval' | 'tool_error'
+
+export function classifyToolError(error: string): ToolErrorKind {
+  if (/\b(no such file|file not found|cannot find (?:the )?file|enoent)\b/i.test(error)) return 'missing_file'
+  if (/\b(system protection|protected by (?:the )?system|hardcoded.*protection|cannot bypass.*protection)\b/i.test(error)) return 'system_protection'
+  if (/\b(permission|denied|denial|approval)\b/i.test(error)) return 'approval'
+  return 'tool_error'
+}
+
+const waiters: unique symbol = Symbol('waiters')
+
+/** One agy run's append-only event log plus its settlement state. */
+export class RunRecording {
+  readonly runId: string
+  private readonly events: AgyEvent[] = []
+  private settled = false
+  private failure: RecordingFailure | null = null
+  private resultConversationId: string | null = null
+  private lastStepUsageRaw: RawUsage | null = null
+  private [waiters] = new Set<() => void>()
+  /** DB-resolved full tool args keyed by event index (set during span driving). */
+  private fullArgs: Map<number, Record<string, unknown>> | null = null
+  /** DB-resolved thoughts keyed by event index (set during span driving). */
+  private thoughts: Map<number, string> | null = null
+  /** Isolated pool-account HOME used for this run's agy conversation DB. */
+  accountHome: string | undefined = undefined
+
+  /**
+   * Set by the adapter right after spawn. A mid-turn user steer makes DSH
+   * open a NEW stream() call for the same session while this run's process
+   * is still alive; without aborting it, two agy processes would append to
+   * the SAME conversation concurrently.
+   */
+  requestAbort: (() => void) | null = null
+
+  constructor(runId: string = randomUUID()) {
+    this.runId = runId
+  }
+
+  /** Append one pump event and wake every span consumer. */
+  append(ev: AgyEvent): void {
+    if (this.settled) return
+    this.events.push(ev)
+    if (ev.kind === 'result') this.resultConversationId = ev.conversationId ?? null
+    if (ev.kind === 'init' && typeof ev.conversationId === 'string' && ev.conversationId !== '') {
+      // init can carry the conversation id before the result envelope; prefer
+      // the earliest known id so continuation spans can resolve the agy DB.
+      this.resultConversationId = this.resultConversationId ?? ev.conversationId
+    }
+    this.wake()
+  }
+
+  /**
+   * Usage accounting (verified against agy 1.1.16 stream-json): step_update
+   * usage is PER-CALL (the current context size at that internal LLM call),
+   * while the result envelope's usage is CUMULATIVE across the whole agy
+   * conversation. DSH's token meter treats the last reported sample as
+   * current context occupancy, so forwarding the cumulative result makes
+   * pressure explode quadratically and fires compaction within a few turns.
+   * We therefore remember the last per-call step sample and report IT at
+   * result time instead of the cumulative envelope.
+   */
+  noteStepUsage(raw: RawUsage): void {
+    this.lastStepUsageRaw = raw
+  }
+
+  /** The usage to report for the result envelope: last per-call step sample. */
+  finalUsage(resultRaw: RawUsage): RawUsage {
+    return this.lastStepUsageRaw ?? resultRaw
+  }
+
+  /** Settle the recording: no further events will arrive. */
+  settle(failure: RecordingFailure | null): void {
+    if (this.settled) return
+    this.settled = true
+    this.failure = failure
+    this.wake()
+  }
+
+  private wake(): void {
+    for (const w of this[waiters]) w()
+    this[waiters].clear()
+  }
+
+  get isSettled(): boolean {
+    return this.settled
+  }
+
+  /** Terminal failure, when the run ended without a consumable result. */
+  get failureInfo(): RecordingFailure | null {
+    return this.failure
+  }
+
+  /** Conversation id from the result envelope, once seen. */
+  get conversationId(): string | null {
+    return this.resultConversationId
+  }
+
+  /** Whether a result event (ok or error-with-response) was recorded. */
+  get hasResult(): boolean {
+    return this.resultConversationId !== null || this.events.some((e) => e.kind === 'result')
+  }
+
+  /** The last result envelope's finish-relevant projection, when one arrived. */
+  getResultEvent(): { ok: boolean; response: string } | null {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const ev = this.events[i]
+      if (ev !== undefined && ev.kind === 'result') return { ok: ev.ok, response: ev.response }
+    }
+    return null
+  }
+
+  /** Event at an absolute index (bounds-checked). */
+  eventAt(index: number): AgyEvent | undefined {
+    return this.events[index]
+  }
+
+  /** Number of recorded events so far. */
+  get length(): number {
+    return this.events.length
+  }
+
+  /**
+   * Whether any assistant-visible text streamed before (not including) the
+   * given index. Carried into each span's mapper so the result-envelope
+   * fallback never duplicates text earlier spans already streamed.
+   */
+  sawTextBefore(index: number): boolean {
+    for (let i = 0; i < Math.min(index, this.events.length); i++) {
+      const ev = this.events[i]
+      if (ev !== undefined && ev.kind === 'step' && ev.stepKind === 'text' && ev.text !== '') return true
+    }
+    return false
+  }
+
+  /**
+   * Yield events at or after `from`, waiting for the pump while the run is
+   * live. The iterator ends once every recorded event was yielded AND the
+   * recording settled — spans then inspect failureInfo to finish or fail.
+   */
+  async *eventsFrom(from: number): AsyncGenerator<AgyEvent> {
+    let cursor = from
+    for (;;) {
+      while (cursor < this.events.length) {
+        yield this.events[cursor] as AgyEvent
+        cursor++
+      }
+      if (this.settled) return
+      await new Promise<void>((resolve) => {
+        this[waiters].add(resolve)
+      })
+    }
+  }
+
+  /**
+   * Recorded tool step for a mirror-tool call: the event at `eventIndex` must
+   * be the completed tool step the callId was minted from.
+   */
+  toolEventAt(eventIndex: number): { name: string; args?: unknown; output?: unknown; error?: string } | null {
+    const ev = this.events[eventIndex]
+    if (ev === undefined || ev.kind !== 'step' || ev.stepKind !== 'tool' || !ev.tool) return null
+    const full = this.fullArgs?.get(eventIndex)
+    if (full !== undefined && full !== null) {
+      // Merge DB-resolved args (which include the content fields agy strips
+      // from the stream) over the stream-carried args. Stream fields win so the
+      // mirror always sees the freshest live values.
+      return { ...ev.tool, args: { ...full, ...(typeof ev.tool.args === 'object' ? ev.tool.args as Record<string, unknown> : {}) } }
+    }
+    return ev.tool
+  }
+
+  /** Raw errors reported by completed agy tool steps, in event order. */
+  toolErrors(): string[] {
+    const errors: string[] = []
+    for (const ev of this.events) {
+      if (ev.kind === 'step' && ev.stepKind === 'tool' && ev.tool?.error !== undefined) {
+        errors.push(ev.tool.error)
+      }
+    }
+    return errors
+  }
+
+  /** Store full DB-resolved tool args for a step (set during span driving). */
+  setFullArgs(eventIndex: number, args: Record<string, unknown>): void {
+    this.fullArgs ??= new Map()
+    this.fullArgs.set(eventIndex, args)
+  }
+
+  /** Store DB-resolved thoughts for a step (set during span driving). */
+  setThoughts(eventIndex: number, text: string): void {
+    this.thoughts ??= new Map()
+    this.thoughts.set(eventIndex, text)
+  }
+
+  /** Retrieve DB-resolved thoughts for a step if previously resolved. */
+  getThoughts(eventIndex: number): string | undefined {
+    return this.thoughts?.get(eventIndex)
+  }
+}
+
+/** Full-args resolver injected into RunRecording (set in RunRegistry.create). */
+export type FullArgsResolver = (eventIndex: number) => Promise<Record<string, unknown> | null>
+
+/** Prefix every mirrored agy tool callId carries; continuation detection key. */
+export const AGY_CALL_PREFIX = 'agytc-'
+
+/** Mint the callId for one recorded tool event. */
+export function mirrorCallId(runId: string, eventIndex: number): string {
+  return AGY_CALL_PREFIX + runId + '-' + String(eventIndex)
+}
+
+/** Parse a callId back into its run coordinates; null when not ours. */
+export function parseMirrorCallId(callId: string): { runId: string; eventIndex: number } | null {
+  if (!callId.startsWith(AGY_CALL_PREFIX)) return null
+  const rest = callId.slice(AGY_CALL_PREFIX.length)
+  // runId is a uuid (hyphens included), so split from the RIGHT: the last
+  // hyphen separates the event index.
+  const idx = rest.lastIndexOf('-')
+  if (idx <= 0) return null
+  const runId = rest.slice(0, idx)
+  const n = Number(rest.slice(idx + 1))
+  if (!Number.isSafeInteger(n) || n < 0) return null
+  return { runId, eventIndex: n }
+}
+
+const MAX_RETAINED_RUNS = 8
+
+/** Bounded registry keeping the most recent runs for continuation spans. */
+export class RunRegistry {
+  private readonly runs = new Map<string, RunRecording>()
+
+  create(): RunRecording {
+    const rec = new RunRecording()
+    this.remember(rec)
+    return rec
+  }
+
+  remember(rec: RunRecording): void {
+    this.runs.set(rec.runId, rec)
+    while (this.runs.size > MAX_RETAINED_RUNS) {
+      const oldest = this.runs.keys().next().value
+      if (oldest === undefined) break
+      this.runs.delete(oldest)
+    }
+  }
+
+  get(runId: string): RunRecording | undefined {
+    return this.runs.get(runId)
+  }
+
+  /** Drop a settled run early (called when its final span finished stop). */
+  forget(runId: string): void {
+    this.runs.delete(runId)
+  }
+}
