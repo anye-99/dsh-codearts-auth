@@ -337,7 +337,7 @@ describe('客户端（plugin-src/client/）', () => {
     expect(client).not.toMatch(/rpcCall\('cline\.requestLog'/)
   })
 
-  it('PROVIDERS 第 14 条仍是 antigravity（对齐不动面板归属）', () => {
+  it('PROVIDERS 第 13 条仍是 antigravity（对齐不动面板归属）', () => {
     expect(client).toMatch(/\{ id: 'antigravity', label: 'Antigravity \(Google\)'/)
   })
 })

@@ -44,8 +44,6 @@ import type { ZcodeCredential } from './zcode.js'
 // 而是与另外 13 个 auth 实例一样作 `registerJetHubRpc` 的位置参数传入。
 import { ANTIGRAVITY_FAMILY_ORDER, ANTIGRAVITY_PROVIDER_ID } from './antigravity-product.js'
 import type { AntigravityService } from './agy-service.js'
-import { DOUBAO_PROVIDER_ID } from './doubao-product.js'
-import type { DoubaoService } from './doubao-service.js'
 import type { ManagedAccount } from './agy/pool-types.js'
 import { modelFamilyOf, type ModelFamily } from './agy/pool-types.js'
 import type { RaccoonCredential } from './raccoon.js'
@@ -704,13 +702,11 @@ export function registerJetHubRpc(
    * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
    */
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
-  doubao?: DoubaoService,
 ): void {
   ctx.inject(['connection'], (connectionCtx) => {
     registerJetHubEndpoints(
       connectionCtx as Context, pool, codearts, buddy, workbuddy, lobsterai,
       qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, antigravity, modelAdapters,
-      doubao,
     )
   })
 }
@@ -787,23 +783,6 @@ function requireAgyService(svc: AntigravityService | undefined):
   | { ok: true; svc: AntigravityService }
   | { ok: false; error: { code: string; message: string } } {
   if (!svc) return { ok: false, error: agyUnavailable().error }
-  return { ok: true, svc }
-}
-
-function doubaoUnavailable(): { ok: false; error: { code: string; message: string } } {
-  return {
-    ok: false,
-    error: {
-      code: 'jet-hub/doubao-unavailable',
-      message: 'Doubao 本地客户端探测服务未就绪。请确认在 Windows 环境下运行。',
-    },
-  }
-}
-
-function requireDoubaoService(svc: DoubaoService | undefined):
-  | { ok: true; svc: DoubaoService }
-  | { ok: false; error: { code: string; message: string } } {
-  if (!svc) return { ok: false, error: doubaoUnavailable().error }
   return { ok: true, svc }
 }
 
@@ -892,7 +871,6 @@ function registerJetHubEndpoints(
    */
   antigravity?: AntigravityService,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
-  doubao?: DoubaoService,
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const connection = (ctx as any).connection ?? ctx.get('connection')
@@ -1018,53 +996,6 @@ function registerJetHubEndpoints(
             ...mapAgyAccount(a),
             isPrimary: a.id === primaryId,
           }))
-          return { ok: true, value: { accounts } }
-        }
-        if (req.provider === DOUBAO_PROVIDER_ID) {
-          const got = requireDoubaoService(doubao)
-          if (!got.ok) return { ok: false, error: got.error }
-          const status = await got.svc.probe()
-          const accounts: Record<string, unknown>[] = []
-          if (status.allUsers && status.allUsers.length > 0) {
-            for (const u of status.allUsers) {
-              const isCurrent = status.currentUser?.userId === u.userId
-              accounts.push({
-                id: `doubao-${u.userId}`,
-                provider: DOUBAO_PROVIDER_ID,
-                alias: `UID: ${u.userId}${isCurrent ? ' (当前)' : ''}`,
-                email: '',
-                credentialRef: '',
-                enabled: u.enable !== false,
-                createdAt: u.userActionTime ? Number(u.userActionTime) : Date.now(),
-                isPrimary: isCurrent,
-                doubaoStatus: status,
-              })
-            }
-          } else if (status.currentUser) {
-            accounts.push({
-              id: 'doubao-local',
-              provider: DOUBAO_PROVIDER_ID,
-              alias: `UID: ${status.currentUser.userId}`,
-              email: '',
-              credentialRef: '',
-              enabled: status.currentUser.enable !== false,
-              createdAt: status.currentUser.userActionTime ? Number(status.currentUser.userActionTime) : Date.now(),
-              isPrimary: true,
-              doubaoStatus: status,
-            })
-          } else if (status.installed) {
-            accounts.push({
-              id: 'doubao-local',
-              provider: DOUBAO_PROVIDER_ID,
-              alias: '本地桌面端 (未登录)',
-              email: '',
-              credentialRef: '',
-              enabled: false,
-              createdAt: Date.now(),
-              isPrimary: true,
-              doubaoStatus: status,
-            })
-          }
           return { ok: true, value: { accounts } }
         }
         const accounts = await pool.listAccounts(req.provider)
@@ -1614,17 +1545,6 @@ function registerJetHubEndpoints(
               qrDataUrl,
             },
           }
-        } else if (provider === DOUBAO_PROVIDER_ID) {
-          const got = requireDoubaoService(doubao)
-          if (!got.ok) return { ok: false, error: got.error }
-          await got.svc.launchClient()
-          return {
-            ok: true,
-            value: {
-              accountId: 'doubao-local',
-              loginUrl: '',
-            },
-          }
         } else {
           return { ok: false, error: { code: 'bad-request', message: `unknown provider: ${provider}` } }
         }
@@ -1632,9 +1552,6 @@ function registerJetHubEndpoints(
 
       case 'account.update': {
         const req = payload as RpcUpdateAccountRequest
-        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
-          return { ok: true, value: undefined }
-        }
         // antigravity 账号不在本池：按 provider 分派到 agyService.pool。
         // 反查 provider：agy 账号 id 形如 acc_*（无 provider- 前缀）。
         const agyGot = requireAgyService(antigravity)
@@ -1654,9 +1571,6 @@ function registerJetHubEndpoints(
 
       case 'account.delete': {
         const req = payload as RpcDeleteAccountRequest
-        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
-          return { ok: true, value: undefined }
-        }
         const agyGot2 = requireAgyService(antigravity)
         if (agyGot2.ok && agyGot2.svc.pool.getAccount(req.accountId)) {
           // 删除会连带清掉隔离 HOME 目录与其中的 agy 登录态（不可撤销）。
@@ -1676,9 +1590,6 @@ function registerJetHubEndpoints(
         }
         if (!Array.isArray(req.orderedIds) || req.orderedIds.some(id => typeof id !== 'string')) {
           return { ok: false, error: { code: 'bad-request', message: 'orderedIds 必须是字符串数组' } }
-        }
-        if (req.provider === DOUBAO_PROVIDER_ID) {
-          return { ok: true, value: undefined }
         }
         // antigravity：分派到 agyService.pool（它管 agy 账号的顺序）。
         if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
@@ -1710,12 +1621,6 @@ function registerJetHubEndpoints(
       case 'account.refresh': {
         const req = payload as RpcRefreshAccountRequest
         try {
-          // doubao：非凭据型本地客户端，探测刷新状态与 UID
-          const doubaoGot = requireDoubaoService(doubao)
-          if (doubaoGot.ok && (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-') || (req as { provider?: string }).provider === DOUBAO_PROVIDER_ID)) {
-            await doubaoGot.svc.probe(true)
-            return { ok: true, value: { success: true } satisfies RpcRefreshAccountResponse }
-          }
           // antigravity：账号不在本插件池（非凭据型：凭据归官方 agy 二进制、
           // 账号是隔离 HOME），先反查 agy 池分派。判据与 account.update/delete
           // 一致（按 id 反查，不写死字面量 provider 分支）。
@@ -1839,27 +1744,6 @@ function registerJetHubEndpoints(
               phase: st.phase,
               url: st.url,
               code: st.code,
-            } satisfies RpcPollLoginResponse,
-          }
-        }
-        if (req.provider === DOUBAO_PROVIDER_ID) {
-          const got = requireDoubaoService(doubao)
-          if (!got.ok) return { ok: true, value: { done: false } satisfies RpcPollLoginResponse }
-          const status = await got.svc.probe(true)
-          if (status.currentUser) {
-            return {
-              ok: true,
-              value: {
-                done: true,
-                success: true,
-              } satisfies RpcPollLoginResponse,
-            }
-          }
-          return {
-            ok: true,
-            value: {
-              done: false,
-              success: false,
             } satisfies RpcPollLoginResponse,
           }
         }
@@ -2164,40 +2048,6 @@ function registerJetHubEndpoints(
         return { ok: true, value: { ok: true } }
       }
 
-      // ===== 豆包客户端控制面（方案 1 · 路线 C：非凭据型本地客户端探测与唤醒） =====
-      case 'doubao.status': {
-        const got = requireDoubaoService(doubao)
-        if (!got.ok) return { ok: false, error: got.error }
-        const status = got.svc.getStatus()
-        return { ok: true, value: status }
-      }
-
-      case 'doubao.probe': {
-        const got = requireDoubaoService(doubao)
-        if (!got.ok) return { ok: false, error: got.error }
-        const status = await got.svc.probe(true)
-        return { ok: true, value: status }
-      }
-
-      case 'doubao.launch': {
-        const got = requireDoubaoService(doubao)
-        if (!got.ok) return { ok: false, error: got.error }
-        const body = (payload ?? {}) as { url?: unknown }
-        const targetUrl = typeof body.url === 'string' && body.url.trim() ? body.url.trim() : undefined
-        try {
-          const res = await got.svc.launchClient(targetUrl)
-          return { ok: true, value: res }
-        } catch (err) {
-          return {
-            ok: false,
-            error: {
-              code: 'jet-hub/doubao-launch-failed',
-              message: err instanceof Error ? err.message : String(err),
-            },
-          }
-        }
-      }
-
       /**
        * 查询新手任务 / 一次性奖励状态（**Loomy** 的新手任务、**raccoon** 的登录奖励，只读）。
        *
@@ -2396,19 +2246,6 @@ function registerJetHubEndpoints(
       // 重测发一次最小对话请求：正常返回才清除标记，仍受限则保留并回报原因。
       case 'account.retest': {
         const req = payload as RpcRetestAccountRequest
-        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
-          const doubaoGot = requireDoubaoService(doubao)
-          if (doubaoGot.ok) {
-            await doubaoGot.svc.probe(true)
-          }
-          return {
-            ok: true,
-            value: {
-              accounts: [{ accountId: req.accountId, tested: 0, cleared: [], stillLimited: [] }],
-              clearedCount: 0,
-            } satisfies RpcRetestResponse,
-          }
-        }
         // antigravity：账号在 agy 池（非凭据型）。「重测」= 对该账号发一次真实
         // 的强制配额刷新（HTTPS 配额查询验证账号仍可用），语义与其余 provider
         // 「发探测消息验证限流标记」同族；ProbeAccountResult 形状对齐。
@@ -2435,19 +2272,6 @@ function registerJetHubEndpoints(
       // 停用账号也能重测（停用只影响自动选择，不影响手动排查）。
       case 'account.retestAll': {
         const req = payload as RpcRetestAllRequest
-        if (req.provider === DOUBAO_PROVIDER_ID) {
-          const doubaoGot = requireDoubaoService(doubao)
-          if (doubaoGot.ok) {
-            await doubaoGot.svc.probe(true)
-          }
-          return {
-            ok: true,
-            value: {
-              accounts: [{ accountId: 'doubao-local', tested: 0, cleared: [], stillLimited: [] }],
-              clearedCount: 0,
-            } satisfies RpcRetestResponse,
-          }
-        }
         // antigravity：对全部账号（**含已停用**，与其余 provider 同约定）做强制配额刷新。
         if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
           const got = requireAgyService(antigravity)
@@ -2468,12 +2292,6 @@ function registerJetHubEndpoints(
       // ── 限流标记：重置（不发请求，直接清除）──
       case 'account.reset': {
         const req = payload as RpcResetAccountRequest
-        if (req.accountId === 'doubao-local' || req.accountId.startsWith('doubao-')) {
-          return {
-            ok: true,
-            value: { clearedCount: 0, accountCount: 1 } satisfies RpcResetResponse,
-          }
-        }
         // antigravity：清该账号的限流冷却（agy 池按 family 记 cooldown）。
         const agyGot = requireAgyService(antigravity)
         if (agyGot.ok && agyGot.svc.pool.getAccount(req.accountId)) {
@@ -2491,12 +2309,6 @@ function registerJetHubEndpoints(
 
       case 'account.resetAll': {
         const req = payload as RpcResetAllRequest
-        if (req.provider === DOUBAO_PROVIDER_ID) {
-          return {
-            ok: true,
-            value: { clearedCount: 0, accountCount: 1 } satisfies RpcResetResponse,
-          }
-        }
         // antigravity：清全部账号的限流冷却。
         if (req.provider === ANTIGRAVITY_PROVIDER_ID) {
           const got = requireAgyService(antigravity)
@@ -3604,18 +3416,6 @@ function registerJetHubEndpoints(
             } else {
               accountStats = { total: 0, enabled: 0 }
             }
-          } else if (provider === DOUBAO_PROVIDER_ID) {
-            const got = requireDoubaoService(doubao)
-            if (got.ok) {
-              const status = got.svc.getStatus()
-              const count = status.allUsers?.length || (status.currentUser ? 1 : (status.installed ? 1 : 0))
-              accountStats = {
-                total: count,
-                enabled: count > 0 && status.currentUser?.enable !== false ? count : 0,
-              }
-            } else {
-              accountStats = { total: 0, enabled: 0 }
-            }
           } else {
             const entries = pool.listAccountsByProvider(provider)
             accountStats = {
@@ -3711,8 +3511,6 @@ function registerJetHubEndpoints(
           for (const acc of agyGot.svc.pool.getAccounts()) {
             if (agyGot.svc.pool.setAccountEnabled(acc.id, req.enabled)) accountCount++
           }
-        } else if (req.provider === DOUBAO_PROVIDER_ID) {
-          accountCount = 0
         } else {
           accountCount = await pool.setAccountsEnabled(req.provider, req.enabled)
         }

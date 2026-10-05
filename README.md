@@ -163,7 +163,7 @@ Tokens 福利）。
 凭据来自默认的新式 IAM OAuth 流程（含 `refresh_token`）。请求发起时会解析最新
 凭据，若已过期则先静默续期，再用新 AK/SK/SecurityToken 签名，无需重新打开浏览器。
 
-除 `codearts` 外，插件另注册十二个独立的 provider 路由：`buddy`（见
+除 `codearts` 外，插件另注册十三个独立的 provider 路由：`buddy`（见
 [buddy provider](#buddy-provider)）、`workbuddy`（见
 [WorkBuddy provider](#workbuddy-provider)）、`lobsterai`（见
 [LobsterAI provider](#lobsterai-provider有道龙虾)）、`qoder`（见
@@ -174,13 +174,16 @@ Tokens 福利）。
 [Loomy provider](#loomy-provider讯飞办公助手)）、`raccoon`（见
 [Raccoon Work provider](#raccoon-work-provider商汤小浣熊)）、`minimax`（见
 [MiniMax Code provider](#minimax-code-provider中国版)）、`zcode`（见
-[ZCode provider](#zcode-provider智谱-zai-免费额度)）与 `antigravity`（见
+[ZCode provider](#zcode-provider智谱-zai-免费额度)）、`antigravity`（见
 [Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)）。十三者互不覆盖，可同时使用。
 
 > **历史**：2026-10-01 曾接入 `vibex`（RunningHub 的 vibe-coding 平台）作为一个
 > **非 LLM 面板**（OAuth 账号 + Remote MCP 工具挂载，无补全端点）；2026-10-02
 > 应要求**整块移除**。相关设计要点保留在 AGENTS.md 的「VibeX 维护要点」里，
 > 仅作将来重新评估时的参考，代码与面板均已不存在。
+> 2026-10-04 曾接入 `doubao`（字节豆包桌面客户端的 CDP 调试通道桥接，非凭据型
+> LLM 路由）；2026-10-05 应要求**整块移除** —— 实现文件、Jet Hub 面板、RPC 分支
+> 与本文档章节均已不存在。
 
 ## 凭证
 
@@ -2396,3 +2399,4 @@ Linux Keyring 里，由官方二进制自管 —— 本插件**从不读写这�
 并完成一次官方登录；默认跳过），实现细节与事故记录见
 `docs/antigravity-jet-hub-integration-plan.md` 与 AGENTS.md 的
 「Antigravity 接入维护要点」。
+

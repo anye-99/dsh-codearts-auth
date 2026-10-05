@@ -357,14 +357,13 @@ describe('ZCode 客户端接入（缺口 3 / 4 / 5）', () => {
     //    该不该按常规账号池恢复」——答案是「出现在导航，但不按账号池恢复」。
     // ⚠️ 2026-10-02 晚些时候**移除 vibex** —— 14 → 13（用户要求整面板下线）。
     // ⚠️ 2026-10-04 接入 doubao（豆包，非凭据型本地客户端面板）—— 13 → 14。
-    //    它与 antigravity 同属「出现在导航、但不按账号池恢复」那一类：
-    //    没有 `ctx.credentials` 条目、不进 `REF_PREFIX_TO_PROVIDER`
-    //    （见 `src/doubao-product.ts` 的路线 C 说明）。
+    // ⚠️ 2026-10-05 **移除 doubao**（用户要求整面板下线）—— 14 → 13。
+    //    它曾与 antigravity 同属「出现在导航、但不按账号池恢复」那一类；
+    //    移除后**唯一**剩下的那类面板是 antigravity。
     //    这条计数断言是**故意**的：面板增删都必须同时改它，逼着改的人回来确认
     //    「这个面板到底该不该出现在左侧导航」——与 `REF_PREFIX_TO_PROVIDER` 成对。
-    expect(ids).toHaveLength(14)
+    expect(ids).toHaveLength(13)
     expect(ids).toContain('antigravity')
-    expect(ids).toContain('doubao')
   })
 
   it('展示名与产品配置一致（避免两处漂移）', () => {
@@ -439,8 +438,8 @@ describe('ZCode RPC 分派（缺口 2：接线）', () => {
     const source = readFileSync(resolve(HERE, '../../src/index.ts'), 'utf8')
     // ⚠️ 2026-09-30 合并后 minimax 排在 zcode 之前 —— 用 .* 容忍中间插队者。
     // ⚠️ 2026-10-02 插入 agyService（antigravity），同日移除 vibex —— 同样用 .* 容忍。
-    // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-    // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+    // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+    //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
     expect(source).toMatch(/registerJetHubRpc\(ctx, pool, service, .*raccoon,.*zcode,.* modelAdapters[,)]/)
     expect(source).toMatch(/zcode: zcodeAdapter/)
   })

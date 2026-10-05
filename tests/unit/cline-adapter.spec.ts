@@ -595,8 +595,8 @@ describe('Cline 接线（源码级回归）', () => {
     // 之前的正则把 `…lobsterai, qoder, trae, cline,` 整段写死了，与这条注释矛盾，
     // 故改为只检查「cline 出现在 modelAdapters 之前」这一不变式。
     expect(source).toMatch(
-      // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-      // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+      // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+      //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
       /registerJetHubRpc\([\s\S]*?cline,[\s\S]*?modelAdapters[,)]/,
     )
     // 老契约下的 settings namespace

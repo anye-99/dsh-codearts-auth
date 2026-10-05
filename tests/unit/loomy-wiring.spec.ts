@@ -89,8 +89,8 @@ describe('Loomy 在 index.ts 的接线', () => {
     // ⚠️ 断言到 `loomy` 与 `modelAdapters` 之间**不限定**具体参数 ——
     // 每新增一个 provider 都会在这中间插一个实参（raccoon 即如此），
     // 写死 `cline, loomy, modelAdapters` 会让每次新增 provider 都误报失败。
-    // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-    // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+    // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+    //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
     expect(indexSource).toMatch(/registerJetHubRpc\([\s\S]*?loomy,[\s\S]*?modelAdapters[,)]/)
   })
 

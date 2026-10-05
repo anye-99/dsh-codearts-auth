@@ -111,6 +111,8 @@ function AgyQuotaRows({ quotas }) {
 function AgyCardExtra({ account, health }) {
   const isPrimary = account.isPrimary === true;
   const systemHome = account.systemHome === true;
+  // 仅在别名存在且与 email 不同时才单独展示邮箱行，避免与账号名标题重复展示
+  const showEmailRow = Boolean(account.alias && account.email && account.alias !== account.email);
   return h('div', { className: 'dim-jh-agy-extra' },
     h('div', { className: 'dim-jh-agy-cardHead' },
       isPrimary ? h('span', { className: 'dim-jh-tag dim-jh-tag-primary' }, '主账号') : null,
@@ -121,16 +123,105 @@ function AgyCardExtra({ account, health }) {
       h('span', { className: `dim-jh-agy-health dim-jh-agy-health-${health.status}` },
         HEALTH_LABEL[health.status] ?? health.status),
       health.message ? h('span', { className: 'dim-jh-hint' }, health.message) : null),
-    account.email ? h('div', { className: 'dim-jh-hint' }, `账号邮箱：${account.email}`) : null,
+    showEmailRow ? h('div', { className: 'dim-jh-hint' }, `账号邮箱：${account.email}`) : null,
     account.proxyUrl ? h('div', { className: 'dim-jh-hint', title: '换码 / 取 email / 配额查询走该代理' }, `代理配置：${account.proxyUrl}`) : null,
     h(AgyQuotaRows, { quotas: account.quotas }),
   );
 }
 
 /**
- * 授权与新建账号弹窗（规范标准模态窗）。
+ * 运行配置模态弹窗（收拢调度模式、默认思考档位与 CLI 环境信息）。
+ */
+function AgyConfigModal({ status, pool, busy, act, api, onClose }) {
+  return h('div', {
+    className: 'dim-jh-modalOverlay',
+    role: 'dialog',
+    'aria-modal': 'true',
+    onClick: (e) => { if (e.target === e.currentTarget) onClose(); },
+  },
+    h('div', { className: 'dim-jh-modal' },
+      h('div', { className: 'dim-jh-modalHead' },
+        h('div', { className: 'dim-jh-modalTitle' },
+          h('strong', null, 'Antigravity 运行配置'),
+          h('span', { className: 'dim-jh-modalSubtitle' }, '调度策略与 CLI 环境'),
+        ),
+        h('div', { className: 'dim-jh-modelPanelActions' },
+          h('button', {
+            className: 'dim-jh-btn dim-jh-btn-sm',
+            onClick: onClose,
+          }, '关闭'),
+        ),
+      ),
+      h('div', { className: 'dim-jh-modalBody' },
+        h('div', { className: 'dim-jh-agy-configSection' },
+          h('h4', { className: 'dim-jh-agy-configTitle' }, 'CLI 运行时状态'),
+          h('div', { className: 'dim-jh-agy-configMeta' },
+            h('div', { className: 'dim-jh-metaRow' },
+              h('dt', null, '版本'),
+              h('dd', null, h('span', { className: 'dim-jh-tag dim-jh-tag-primary' }, status?.version ? `agy ${status.version}` : '未知')),
+            ),
+            h('div', { className: 'dim-jh-metaRow' },
+              h('dt', null, '二进制'),
+              h('dd', null, status?.bin ? h('code', null, status.bin) : '未检测到'),
+            ),
+            h('div', { className: 'dim-jh-metaRow' },
+              h('dt', null, '模型目录'),
+              h('dd', null, `${status?.catalog?.count ?? 0} 个可用模型`),
+            ),
+          ),
+        ),
+        h('div', { className: 'dim-jh-agy-configSection' },
+          h('h4', { className: 'dim-jh-agy-configTitle' }, '多账号取号模式'),
+          h('div', { className: 'dim-jh-agy-controlRow' },
+            ['sequential', 'round-robin'].map(mode => h('button', {
+              key: mode,
+              className: 'dim-jh-btn',
+              'data-active': pool.mode === mode ? 'true' : undefined,
+              title: mode === 'sequential'
+                ? '按 family 粘性用尽：一个账号把某家模型跑到受限，才换下一个'
+                : '轮询：每次请求换下一个可用账号',
+              disabled: busy !== null,
+              onClick: () => void act(`mode-${mode}`, () => api.poolSetMode(mode),
+                `已切换为${mode === 'sequential' ? '顺序耗尽' : '轮询'}`),
+            }, mode === 'sequential' ? '顺序耗尽 (推荐)' : '轮询')),
+          ),
+          h('p', { className: 'dim-jh-hint' }, pool.mode === 'sequential'
+            ? '优先使用排在前面的账号，当触发 429 限流或配额耗尽时自动顺延至下一可用账号。'
+            : '每次会话或请求在各个可用账号之间轮询使用。'),
+        ),
+        h('div', { className: 'dim-jh-agy-configSection' },
+          h('h4', { className: 'dim-jh-agy-configTitle' }, '默认思考档位 (Thinking Effort)'),
+          h('div', { className: 'dim-jh-agy-controlRow' },
+            [{ id: '', label: '跟随模型默认' }].concat(
+              (status.efforts ?? []).map(e => ({ id: e, label: EFFORT_LABEL[e] ?? e })),
+            ).map(opt => h('button', {
+              key: opt.id === '' ? '__auto' : opt.id,
+              className: 'dim-jh-btn',
+              'data-active': (status?.defaultEffort ?? '') === opt.id ? 'true' : undefined,
+              title: opt.id === ''
+                ? '不覆盖：由适配器按 high → medium → low 的阶梯自动选（当前行为）'
+                : `未在模型选择器里指定档位时，用 ${opt.label} 思考档发起请求。档位越高思考越久。`,
+              disabled: busy !== null,
+              onClick: () => void act(`effort-${opt.id || 'auto'}`,
+                () => api.setDefaultEffort(opt.id),
+                opt.id === '' ? '已改为跟随模型默认' : `默认档位已设为 ${opt.label}`),
+            }, opt.label)),
+          ),
+          h('p', { className: 'dim-jh-hint' }, '仅在模型选择器未显式指定推理档位时代入；档位越高思考越充分，耗时相应增加。'),
+        ),
+      ),
+      h('div', { className: 'dim-jh-modalActions' },
+        h('button', { className: 'dim-jh-btn', onClick: onClose }, '完成'),
+      ),
+    ),
+  );
+}
+
+/**
+ * 授权与新建账号弹窗（规范标准模态窗，整合系统主账号与隔离副账号）。
  */
 function AgyLoginModal({ mode, api, auth, busy, act, onClose, onDone }) {
+  const [targetType, setTargetType] = React.useState(mode === 'primary' ? 'primary' : 'secondary');
   const [alias, setAlias] = React.useState('');
   const [proxy, setProxy] = React.useState('');
   const [code, setCode] = React.useState('');
@@ -143,15 +234,12 @@ function AgyLoginModal({ mode, api, auth, busy, act, onClose, onDone }) {
     'aria-modal': 'true',
     onClick: (e) => { if (e.target === e.currentTarget && !submitting) onClose(); },
   },
-    // ⚠️ 不再内联 width —— 共享 .dim-jh-modal 已定义 min(560px, 100%)，
-    // 与「模型列表 / 订阅额度 / 账号备份」等全部弹窗同宽（2026-10-04 对齐）。
     h('div', { className: 'dim-jh-modal' },
       h('div', { className: 'dim-jh-modalHead' },
         h('div', { className: 'dim-jh-modalTitle' },
-          h('strong', null, isPending ? 'Google 账号授权中' : (mode === 'primary' ? '登录主账号' : '新建副账号')),
+          h('strong', null, isPending ? 'Google 账号授权中' : '添加 Google 账号'),
           h('span', { className: 'dim-jh-modalSubtitle' }, 'Antigravity (Google)'),
         ),
-        // 头部动作包进共享容器 dim-jh-modelPanelActions（其他弹窗同款）。
         h('div', { className: 'dim-jh-modelPanelActions' },
           h('button', {
             className: 'dim-jh-btn dim-jh-btn-sm',
@@ -197,10 +285,24 @@ function AgyLoginModal({ mode, api, auth, busy, act, onClose, onDone }) {
               ),
               h('p', { className: 'dim-jh-hint' }, '授权链接约 2 分钟后失效；若失效可取消后重新发起。'))
           : h('div', { className: 'dim-jh-agy-loginModal' },
-              h('p', { className: 'dim-jh-hint' }, mode === 'primary'
-                ? '在真实系统 HOME 登录 Google 账号。官方 agy 直接读取系统凭据管理器中的授权凭据。'
-                : '新建一个隔离 HOME 的副账号并发起 Google 授权（用于账号轮转与耗尽自动切换）。'),
-              mode === 'secondary'
+              h('div', { className: 'dim-jh-agy-typeSelector' },
+                h('button', {
+                  type: 'button',
+                  className: 'dim-jh-btn',
+                  'data-active': targetType === 'secondary' ? 'true' : undefined,
+                  onClick: () => setTargetType('secondary'),
+                }, '新建副账号 (隔离环境·推荐)'),
+                h('button', {
+                  type: 'button',
+                  className: 'dim-jh-btn',
+                  'data-active': targetType === 'primary' ? 'true' : undefined,
+                  onClick: () => setTargetType('primary'),
+                }, '登录主账号 (系统 HOME)'),
+              ),
+              h('p', { className: 'dim-jh-hint' }, targetType === 'secondary'
+                ? '新建一个独立隔离 HOME 的副账号并发起 Google 授权，用于多账号轮转与耗尽自动切换。'
+                : '在真实系统 HOME 登录 Google 账号。官方 agy 直接读取系统凭据管理器中的授权凭据。'),
+              targetType === 'secondary'
                 ? h('div', { className: 'dim-jh-agy-formGroup' },
                     h('label', { className: 'dim-jh-agy-formLabel' }, '账号别名（可选）'),
                     h('input', {
@@ -230,8 +332,8 @@ function AgyLoginModal({ mode, api, auth, busy, act, onClose, onDone }) {
                   className: 'dim-jh-btn',
                   'data-kind': 'primary',
                   disabled: busy !== null,
-                  onClick: () => void act(mode === 'primary' ? 'beginPrimary' : 'begin', async () => {
-                    const res = mode === 'primary'
+                  onClick: () => void act(targetType === 'primary' ? 'beginPrimary' : 'begin', async () => {
+                    const res = targetType === 'primary'
                       ? await api.loginBeginPrimary(proxy.trim() || undefined)
                       : await api.loginBegin(alias.trim() || undefined, proxy.trim() || undefined);
                     return res;
@@ -265,6 +367,7 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
   const [loginModal, setLoginModal] = React.useState(null);
   const [showModels, setShowModels] = React.useState(false);
   const [showQuota, setShowQuota] = React.useState(false);
+  const [showConfig, setShowConfig] = React.useState(false);
   const mounted = React.useRef(true);
 
   React.useEffect(() => {
@@ -427,6 +530,11 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
         }, '订阅额度'),
         h('button', {
           className: 'dim-jh-btn',
+          title: '查看 CLI 状态与取号/推理档位偏好设置',
+          onClick: () => setShowConfig(true),
+        }, '运行配置'),
+        h('button', {
+          className: 'dim-jh-btn',
           title: '真探登录态与模型目录（会 spawn 一次 agy；未登录时约需 15 秒）',
           disabled: busy !== null,
           onClick: () => void act('probe', probeNow, '已完成真实状态探测'),
@@ -445,16 +553,10 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
         }, '重置所有'),
         h('button', {
           className: 'dim-jh-btn',
-          title: '在真实系统 HOME 登录 Google 账号（官方 agy 直接认这份凭据）。浏览器会自动打开授权页；需要代理时可先配置代理。',
-          disabled: busy !== null,
-          onClick: () => setLoginModal('primary'),
-        }, '登录主账号'),
-        h('button', {
-          className: 'dim-jh-btn',
           'data-kind': 'primary',
-          title: '新建一个隔离 HOME 的副账号并发起 Google 授权（多账号轮转/耗尽切换用）。',
+          title: '添加并授权 Google 账号（支持系统主账号与多副账号隔离轮转）。',
           disabled: busy !== null,
-          onClick: () => setLoginModal('secondary'),
+          onClick: () => setLoginModal('new'),
         }, '+ 新建账号'),
       ),
     ),
@@ -491,50 +593,6 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
         ),
       ),
     ) : null,
-
-    // ── 3. 系统运行时状态与池偏好设置卡片 ──
-    h('div', { className: 'dim-jh-agy-settingsCard' },
-      h('div', { className: 'dim-jh-agy-metaRow' },
-        h('div', { className: 'dim-jh-agy-metaLeft' },
-          h('span', { className: 'dim-jh-tag dim-jh-tag-primary' }, status.version ? `agy ${status.version}` : 'agy 版本未知'),
-          status.bin ? h('span', { className: 'dim-jh-hint', title: status.bin }, `二进制 ${status.bin}`) : null,
-          status.catalog?.count ? h('span', { className: 'dim-jh-hint' }, `模型目录 ${status.catalog.count} 个`) : null,
-        ),
-      ),
-      h('div', { className: 'dim-jh-agy-controlsRow' },
-        h('div', { className: 'dim-jh-agy-controlGroup' },
-          h('span', { className: 'dim-jh-agy-controlLabel' }, '取号模式'),
-          ['sequential', 'round-robin'].map(mode => h('button', {
-            key: mode,
-            className: 'dim-jh-btn',
-            'data-active': pool.mode === mode ? 'true' : undefined,
-            title: mode === 'sequential'
-              ? '按 family 粘性用尽：一个账号把某家模型跑到受限，才换下一个'
-              : '轮询：每次请求换下一个可用账号',
-            disabled: busy !== null,
-            onClick: () => void act(`mode-${mode}`, () => api.poolSetMode(mode),
-              `已切换为${mode === 'sequential' ? '顺序耗尽' : '轮询'}`),
-          }, mode === 'sequential' ? '顺序耗尽' : '轮询')),
-        ),
-        h('div', { className: 'dim-jh-agy-controlGroup' },
-          h('span', { className: 'dim-jh-agy-controlLabel' }, '默认思考档位'),
-          [{ id: '', label: '跟随模型默认' }].concat(
-            (status.efforts ?? []).map(e => ({ id: e, label: EFFORT_LABEL[e] ?? e })),
-          ).map(opt => h('button', {
-            key: opt.id === '' ? '__auto' : opt.id,
-            className: 'dim-jh-btn',
-            'data-active': (status.defaultEffort ?? '') === opt.id ? 'true' : undefined,
-            title: opt.id === ''
-              ? '不覆盖：由适配器按 high → medium → low 的阶梯自动选（当前行为）'
-              : `未在模型选择器里指定档位时，用 ${opt.label} 思考档发起请求。档位越高思考越久、通常越慢。`,
-            disabled: busy !== null,
-            onClick: () => void act(`effort-${opt.id || 'auto'}`,
-              () => api.setDefaultEffort(opt.id),
-              opt.id === '' ? '已改为跟随模型默认' : `默认档位已设为 ${opt.label}`),
-          }, opt.label)),
-        ),
-      ),
-    ),
 
     // ── 4. 账号列表（共享 AccountCard + extra 内联配额与专属操作）──
     accounts.length === 0
@@ -622,6 +680,15 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
       provider: 'antigravity',
       rpcCall,
       onClose: () => setShowQuota(false),
+    }) : null,
+
+    showConfig ? h(AgyConfigModal, {
+      status,
+      pool,
+      busy,
+      act,
+      api,
+      onClose: () => setShowConfig(false),
     }) : null,
   );
 }

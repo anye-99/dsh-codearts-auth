@@ -69,8 +69,8 @@ describe('Raccoon 在 index.ts 的接线', () => {
   it('registerJetHubRpc 传入了 raccoon', () => {
     // ⚠️ 不限定 raccoon 与 modelAdapters 之间的具体实参：将来新增 provider
     // 会在此处插入新参数，写死顺序会让每次扩展都误报失败。
-    // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-    // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+    // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+    //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
     expect(indexSource).toMatch(/registerJetHubRpc\([\s\S]*?raccoon,[\s\S]*?modelAdapters[,)]/)
   })
 

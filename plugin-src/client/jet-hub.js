@@ -42,7 +42,6 @@ import {
 } from './model-groups.js';
 import { formatRowTokensPerSecond } from './tokens-per-second.js';
 import { AntigravityPanel } from './antigravity-panel.js';
-import { DoubaoPanel } from './doubao-panel.js';
 import { decryptBackup, encryptBackup, isEncryptedBackup } from './backup-crypto.js';
 
 export const JET_HUB_RPC_CHANNEL = '/jet-hub';
@@ -222,12 +221,6 @@ const ZCODE_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAA
  */
 const ANTIGRAVITY_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjMjU2M2ViJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjYTg1NWY3Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0ndXJsKCNnKScvPjxwYXRoIGQ9J00xNiA1LjVjMy40IDIuNiA1LjIgNi4zIDUuMiAxMEwxNiAyNWwtNS4yLTkuNWMwLTMuNyAxLjgtNy40IDUuMi0xMHonIGZpbGw9JyNmZmYnLz48Y2lyY2xlIGN4PScxNicgY3k9JzEzLjgnIHI9JzIuMycgZmlsbD0nIzIzM2E4ZicvPjxwYXRoIGQ9J00xMCAyMS41IDYuOCAyN2w1LjYtMi40TTIyIDIxLjUgMjUuMiAyN2wtNS42LTIuNCcgc3Ryb2tlPScjZmZmJyBzdHJva2Utd2lkdGg9JzEuNycgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+PC9zdmc+";
 
-/**
- * Doubao (豆包) 面板图标：内联 SVG 的 base64。
- * 遵循路线 C：非凭据型本地客户端联动面板。
- */
-const DOUBAO_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0nIzJBNkJGMicvPjxwYXRoIGQ9J00xNiA2QzEwLjUgNiA2IDEwLjIgNiAxNS41YzAgMy4yIDEuNiA2IDQgNy43VjI2bDMuNi0xLjhjLjguMiAxLjYuMyAyLjQuMyA1LjUgMCAxMC00LjIgMTAtOS41UzIxLjUgNiAxNiA2eicgZmlsbD0nI2ZmZicvPjxjaXJjbGUgY3g9JzEyLjUnIGN5PScxNC41JyByPScxLjUnIGZpbGw9JyMyQTZCRjInLz48Y2lyY2xlIGN4PScxOS41JyBjeT0nMTQuNSIgcj0nMS41JyBmaWxsPScjMkE2QkYyJy8+PHBhdGggZD0nTTEzIDE4Yy44LjggMiAxLjMgMyAxLjNzMi4yLS41IDMtMS4zJyBzdHJva2U9JyMyQTZCRjInIHN0cm9rZS13aWR0aD0nMS41JyBzdHJva2UtbGluZWNhcD0ncm91bmQnIGZpbGw9J25vbmUnLz48L3N2Zz4=";
-
 const PROVIDERS = Object.freeze([
   { id: 'codearts', label: 'CodeArts (华为云)', icon: CODEARTS_ICON, logoClass: 'codearts' },
   { id: 'buddy', label: 'CodeBuddy (腾讯)', icon: CODEBUDDY_ICON, logoClass: 'buddy' },
@@ -278,13 +271,6 @@ const PROVIDERS = Object.freeze([
    * 这些按钮不是「还没做」，而是**做了就是假开关**，故一律不渲染。
    */
   { id: 'antigravity', label: 'Antigravity (Google)', icon: ANTIGRAVITY_ICON, logoClass: 'antigravity' },
-  /**
-   * Doubao（豆包，字节跳动，第 15 个面板）—— 方案 1 · 路线 C：非凭据型本地客户端联动面板。
-   *
-   * 遵循路线 C 设计规范：仅作本地桌面端状态探测、当前登录 UID 感知与协议一键唤醒面板。
-   * 本插件不持有 Token / Cookie 凭据，完全复用官方客户端自带账号状态。
-   */
-  { id: 'doubao', label: 'Doubao (豆包)', icon: DOUBAO_ICON, logoClass: 'doubao' },
 ]);
 
 /**
@@ -293,11 +279,6 @@ const PROVIDERS = Object.freeze([
  * 面板内所有「是不是 agy」的判据都走这个常量，不要各处写字面量。
  */
 const ANTIGRAVITY_PANEL_ID = 'antigravity';
-
-/**
- * Doubao 面板 id 常量（与 `PROVIDERS` 里的条目、服务端 `DOUBAO_PROVIDER_ID` 逐字节一致）。
- */
-const DOUBAO_PANEL_ID = 'doubao';
 
 /**
  * 积分能力判定见 `./credits-capabilities.js`。
@@ -3603,26 +3584,21 @@ export function JetHubPage({ close, rpcCall }) {
         role: 'tabpanel',
       },
       PROVIDERS.map(p => p.id === selected
-        // ⚠️ Doubao（方案 1 · 路线 C）与 Antigravity 走独立组件，不进 ProviderPanel。
-        ? (p.id === 'doubao'
-            ? React.createElement(DoubaoPanel, {
-                key: p.id + '-' + version,
-                rpcCall,
-              })
-            : React.createElement(
-                p.id === 'antigravity' ? AntigravityPanel : ProviderPanel,
-                {
-                  key: p.id + '-' + version,
-                  provider: p.id,
-                  rpcCall,
-                  // Antigravity 复用三个共享组件（以 prop 注入，不反向 import ——
-                  // jet-hub.js 已 import 面板文件，反向引用构成循环依赖）：
-                  // 账号卡片 / 显示列表 / 订阅额度，与其余 13 家同一份实现。
-                  AccountCard,
-                  ModelListPanel,
-                  SubscriptionQuotaPanel,
-                },
-              ))
+        // ⚠️ Antigravity 走独立组件，不进 ProviderPanel。
+        ? React.createElement(
+            p.id === 'antigravity' ? AntigravityPanel : ProviderPanel,
+            {
+              key: p.id + '-' + version,
+              provider: p.id,
+              rpcCall,
+              // Antigravity 复用三个共享组件（以 prop 注入，不反向 import ——
+              // jet-hub.js 已 import 面板文件，反向引用构成循环依赖）：
+              // 账号卡片 / 显示列表 / 订阅额度，与其余 12 家同一份实现。
+              AccountCard,
+              ModelListPanel,
+              SubscriptionQuotaPanel,
+            },
+          )
         : null))),
     // 「供应商开关」以 modal 渲染：它是覆盖层，放在布局之后只是组件树的书写顺序
     // （与账号面板里的模型列表同款做法）。关闭即不挂载，避免常驻一份开关列表。

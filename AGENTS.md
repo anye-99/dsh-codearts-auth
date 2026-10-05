@@ -8,14 +8,15 @@
 
 ## 项目概述
 
-本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）、`minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）、`zcode`（智谱 **Z.Code** 免费额度通道）、`antigravity`（Google **Antigravity** / 官方 `agy` CLI 进程桥接，**非凭据型**）十二个 LLM provider 路由，另有 `doubao`（字节 **豆包** 桌面客户端联动，**非凭据型、非 LLM 路由**）。
-<!-- 计数口径（2026-10-04 终态）：14 个面板 = codearts + 12 个 LLM 路由 + doubao（本地客户端面板）。
-⚠️ 曾接入的 `vibex`（非 LLM 面板）与 `mimocode` 均已移除 —— 面板增删时必须回来改这一句，
-且 `zcode-wiring.spec.ts` 的 `PROVIDERS` 计数断言（当前 14）与 `REF_PREFIX_TO_PROVIDER`
-要成对核对。antigravity **是** LLM 路由（`registerAdapterIdempotent(ctx.llm, ['antigravity'])`），
-故计入「十二个」，但它的**账号形态**与其余 11 家不同（非凭据型），见下文 Antigravity 维护要点。
-⚠️ `antigravity` 与 `doubao` 是**仅有的两个不进** `REF_PREFIX_TO_PROVIDER` 的面板（都非凭据型，
-补进去会在 `state.json` 丢失时造出指向空气的账号）；`jet-hub-store.spec.ts` 各有独立用例钉死。 -->
+本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）、`minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）、`zcode`（智谱 **Z.Code** 免费额度通道）、`antigravity`（Google **Antigravity** / 官方 `agy` CLI 进程桥接，**非凭据型**）十二个 LLM provider 路由。
+<!-- 计数口径（2026-10-05 终态）：13 个面板 = codearts + 12 个 LLM 路由。
+⚠️ 曾接入的 `vibex`（非 LLM 面板）、`mimocode` 与 `doubao`（字节豆包桌面端 CDP 桥接）
+均已移除 —— 面板增删时必须回来改这一句，
+且 `zcode-wiring.spec.ts` 的 `PROVIDERS` 计数断言（当前 13）与 `REF_PREFIX_TO_PROVIDER`
+要成对核对。antigravity **是** LLM 路由（调用 `registerAdapterIdempotent`），
+但它的**账号形态**与其余 11 家不同（非凭据型，凭据由官方 agy 二进制自管）。
+⚠️ `antigravity` 是**仅有的一个不进** `REF_PREFIX_TO_PROVIDER` 的面板（非凭据型，
+补进去会在 `state.json` 丢失时造出指向空气的账号）；`jet-hub-store.spec.ts` 有用例钉死。 -->
 
 `buddy` 与 `workbuddy` 同源：共用同一 CLI 内核与同一认证协议，差异全部收敛在 `src/product.ts` 的产品配置中。关键差异是 **`endpoint`**：中国版为 `copilot.tencent.com`，国际版为 `www.workbuddy.ai`，两者返回不同模型池，因此 endpoint 必须随产品切换、不可当作全局常量。此外 `platform` 分别为 `ide` 与 `workbuddy-ai`，国际版登录 URL 还追加 `version` / `loginSessionId`。
 

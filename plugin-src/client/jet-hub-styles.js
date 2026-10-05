@@ -108,6 +108,12 @@ const STYLES = `
 .dim-jh-agy-loginRow input, .dim-jh-agy-formInput { flex: 1 1 200px; min-width: 0; padding: 7px 10px; border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); border-radius: 8px; background: var(--dsw-alias-bg-layer-1, #fff); color: inherit; font-size: 13px; outline: none; }
 .dim-jh-agy-loginRow input:focus, .dim-jh-agy-formInput:focus { border-color: #1677ff; }
 .dim-jh-agy-loginModal { display: grid; gap: 14px; }
+.dim-jh-agy-typeSelector { display: flex; gap: 8px; margin-bottom: 4px; }
+.dim-jh-agy-typeSelector .dim-jh-btn { flex: 1; text-align: center; }
+.dim-jh-agy-configSection { display: grid; gap: 8px; margin-bottom: 16px; }
+.dim-jh-agy-configTitle { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); }
+.dim-jh-agy-configMeta { display: grid; gap: 6px; padding: 10px 14px; border-radius: 8px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #eef0f3); }
+.dim-jh-agy-controlRow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .dim-jh-agy-formGroup { display: grid; gap: 6px; }
 .dim-jh-agy-formLabel { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary, #646a73); }
 
@@ -454,50 +460,6 @@ const STYLES = `
    很长,继承 td 的 nowrap + hidden 会把表格撑出横向滚动(参考实现的原坑)。 */
 .dim-jh-quotaTable tr[data-error="true"] td { color: var(--dsw-alias-state-error-primary, #d93025); }
 .dim-jh-quotaTable td.dim-jh-quotaError { font-size: 11.5px; line-height: 1.5; white-space: normal; overflow: visible; text-overflow: clip; word-break: break-word; }
-
-/* ── Doubao (豆包) 本地联动面板（方案 1 · 路线 C） ── */
-.dim-jh-doubao-panel { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 900px; padding: 4px 0 24px; box-sizing: border-box; }
-.dim-jh-doubao-banner { padding: 14px 18px; border-radius: 12px; background: var(--dsw-alias-bg-layer-2, #f5f8ff); border: 1px solid var(--dsw-alias-border-l2, #d8e5ff); }
-.dim-jh-doubao-bannerTitle { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-.dim-jh-doubao-bannerTitle strong { font-size: 14px; color: var(--dsw-alias-label-primary, #1f2329); }
-.dim-jh-doubao-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; background: #e8f3ff; color: #1677ff; }
-.dim-jh-doubao-bannerDesc { margin: 0; font-size: 12px; line-height: 20px; color: var(--dsw-alias-label-secondary, #646a73); }
-.dim-jh-doubao-notice { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; border-radius: 8px; font-size: 13px; }
-.dim-jh-doubao-notice-success { background: var(--dsw-success-light, #e8f8f2); color: var(--dsw-success-normal, #2ba471); border: 1px solid #b7ebd4; }
-.dim-jh-doubao-notice-error { background: var(--dsw-error-light, #fdecea); color: var(--dsw-text-error, #d54941); border: 1px solid #f9c2be; }
-.dim-jh-doubao-noticeText { flex: 1; }
-.dim-jh-doubao-noticeClose { background: none; border: none; font-size: 14px; cursor: pointer; color: inherit; padding: 0 4px; }
-.dim-jh-doubao-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
-.dim-jh-doubao-card { display: flex; flex-direction: column; padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-1, #fff); border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); box-sizing: border-box; }
-.dim-jh-doubao-card-wide { grid-column: 1 / -1; }
-.dim-jh-doubao-cardHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-.dim-jh-doubao-cardTitle { font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #1f2329); }
-.dim-jh-doubao-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
-.dim-jh-doubao-badge-green { background: #e8f8f2; color: #2ba471; }
-.dim-jh-doubao-badge-gray { background: #f2f3f5; color: #8f959e; }
-.dim-jh-doubao-badge-orange { background: #fff7e8; color: #d25f00; }
-.dim-jh-doubao-badge-blue { background: #e8f3ff; color: #1677ff; }
-.dim-jh-doubao-cardBody { display: flex; flex-direction: column; gap: 8px; }
-.dim-jh-doubao-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 20px; }
-.dim-jh-doubao-label { color: var(--dsw-alias-label-secondary, #646a73); flex-shrink: 0; }
-.dim-jh-doubao-value { color: var(--dsw-alias-label-primary, #1f2329); font-weight: 500; text-align: right; }
-.dim-jh-doubao-path { font-family: var(--dsw-font-family-mono, monospace); font-size: 11px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dim-jh-doubao-uidBox { display: flex; flex-direction: column; gap: 6px; }
-.dim-jh-doubao-uidHero { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.dim-jh-doubao-uidLabel { color: var(--dsw-alias-label-secondary, #646a73); }
-.dim-jh-doubao-uidValue { font-family: var(--dsw-font-family-mono, monospace); font-size: 16px; color: #1677ff; letter-spacing: 0.5px; }
-.dim-jh-doubao-uidStatus { font-size: 11px; padding: 1px 6px; border-radius: 999px; }
-.dim-jh-doubao-emptyUid p { margin: 0 0 4px; font-size: 13px; color: var(--dsw-alias-label-secondary, #646a73); }
-.dim-jh-doubao-usersHistory { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--dsw-alias-border-l2, #dfe1e5); display: flex; align-items: center; gap: 8px; }
-.dim-jh-doubao-usersTags { display: flex; flex-wrap: wrap; gap: 6px; }
-.dim-jh-doubao-userTag { padding: 2px 7px; border-radius: 6px; background: #f2f3f5; font-size: 11px; font-family: var(--dsw-font-family-mono, monospace); color: #4e5969; }
-.dim-jh-doubao-userTag-active { background: #e8f3ff; color: #1677ff; font-weight: 600; }
-.dim-jh-doubao-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
-.dim-jh-doubao-launchBtn { min-width: 140px; }
-.dim-jh-doubao-advanced { margin-top: 6px; padding: 12px 14px; border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #f7f8fa); border: 1px solid var(--dsw-alias-border-l2, #dfe1e5); }
-.dim-jh-doubao-inputGroup { display: flex; flex-direction: column; gap: 6px; }
-.dim-jh-doubao-inputRow { display: flex; gap: 8px; align-items: center; }
-.dim-jh-doubao-urlInput { flex: 1; min-width: 220px; font-family: var(--dsw-font-family-mono, monospace); font-size: 12px; }
 `
 
 let injected = false

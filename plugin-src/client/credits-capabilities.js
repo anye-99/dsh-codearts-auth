@@ -166,7 +166,6 @@ export const CREDITS_CAPABILITIES = Object.freeze({
    */
   zcode: Object.freeze({ balance: true, dailyCheckin: true }),
   antigravity: Object.freeze({ balance: false, dailyCheckin: false, subscriptionQuota: true }),
-  doubao: Object.freeze({ balance: false, dailyCheckin: false, subscriptionQuota: false }),
 });
 
 /**
@@ -190,8 +189,6 @@ export const RATE_LIMIT_CAPABILITIES = Object.freeze({
   // Loomy（讯飞）：**不返回限流错误** —— 积分耗尽时静默降级为扣永久积分，
   // 故「重测 / 重置」这组按钮对它无意义（重测还会白烧积分）。
   loomy: Object.freeze({ rateLimit: false }),
-  // Doubao（路线 C）：非凭据型本地客户端面板，无远程代理流式模型限流
-  doubao: Object.freeze({ rateLimit: false }),
 });
 
 /**

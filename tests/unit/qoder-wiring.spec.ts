@@ -46,8 +46,8 @@ describe('Qoder 宿主侧接线（src/index.ts）', () => {
     // **不要**写死整串前缀 —— 那会让每加一个 provider 都假失败
     //（加 Loomy、Raccoon、QoderCN 时各踩过一次）。
     // 「中国版紧跟国际版」这条更具体的约束由下面的 QoderCN 用例负责。
-    // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-    // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+    // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+    //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
     expect(index).toMatch(
       /registerJetHubRpc\([\s\S]*?qoder,[\s\S]*?modelAdapters[,)]/,
     )
@@ -188,8 +188,8 @@ describe('QoderCN 宿主侧接线（src/index.ts）', () => {
   it('registerJetHubRpc 把 qoderCn 作为 qoder 之后的位置参数传入', () => {
     // ⚠️ 形参是位置参数：CN 实例必须紧跟国际版，便于同族对照。
     // 与既有的 qoder 那条同理，**不要**限定中间有几个 provider。
-    // ⚠️ 2026-10-04：`modelAdapters` **之后**还可跟实参（doubaoService 追加到
-    // 末尾），故结尾用 `[,)]` 而非 `\)` —— 否则每加一个尾参都假失败。
+    // ⚠️ 结尾用 `[,)]` 而非 `\)`：`modelAdapters` **之后**还可能再跟实参
+    //（2026-10-04 的 doubaoService 尾参就让写死 `\)` 的版本假失败过）。
     expect(index).toMatch(
       /registerJetHubRpc\(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, [\w, ]*modelAdapters[,)]/,
     )

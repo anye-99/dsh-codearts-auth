@@ -53,7 +53,6 @@ import type { MinimaxCredential } from './minimax.js'
 import { createAntigravityService } from './agy-service.js'
 import { AntigravityAdapter } from './antigravity-adapter.js'
 import { registerAdapterIdempotent } from './llm-register-compat.js'
-import { DoubaoService } from './doubao-service.js'
 
 export const name = 'codearts-auth'
 // `connection` 刻意不列入静态 inject：它只由 Web bundle（dsh-client-connection）
@@ -229,10 +228,6 @@ export function apply(ctx: Context): void {
   )
   const service = new CodeArtsAuth(ctx)
   const pool = new AccountPool(ctx)
-  const doubaoService = new DoubaoService()
-  ctx.effect(() => () => {
-    doubaoService.dispose()
-  }, 'codearts-auth.doubao')
 
   // WorkBuddy provider 已从中国版（copilot.tencent.com）改造为国际版
   // （www.workbuddy.ai）。旧账号存的是中国版凭据，其 token.domain 指向旧端点，
@@ -1295,7 +1290,6 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     // 闸门的配额刷新（跳过 cooldown / 待重登账号），与下方独立的后台配额
     // 轮询互补 —— 那张表驱动"何时刷"，这里驱动"批量入口的形状与其余 13 家一致"。
     ['antigravity', (p) => agyService.refreshAll()],
-    ['doubao', () => doubaoService.probe(true).then(() => undefined)],
   ]
 
   async function refreshAllCredentials(): Promise<void> {
@@ -1431,6 +1425,7 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     },
   })
   registerAdapterIdempotent(ctx.llm, ['antigravity'], agyAdapter)
+
   // agyService 作为位置参数传给 registerJetHubRpc（与其余 13 家 auth 实例同
   // 一契约，见下方调用）——jet-hub-rpc 的 handleMethod 用它给 antigravity
   // 分派账号/登录/配额/模型端点，不再走模块级 holder。
@@ -1476,6 +1471,6 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     antigravity: agyAdapter,
   }
 
-  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, agyService, modelAdapters, doubaoService)
+  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, agyService, modelAdapters)
   ctx.provide('accountPool', pool)
 }
