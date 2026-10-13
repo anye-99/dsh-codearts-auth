@@ -97,3 +97,12 @@ docs/minimax-protocol-notes.md
 # 探针在缺该文件时整体跳过（见 tests/e2e/image-probe-shared.ts 的 hasFixture），
 # 要跑图片压力探测请自备一张 ≥2000×1200 且不含个人信息的截图放到这个路径。
 tests/fixtures/test.png
+
+# e2e 产物与本地运行日志：**不入库**。
+#
+# `dist/` 是本地打补丁 / 打包脚本的产物目录（如曾用于 VibeX bundle 的临时打包），
+# `*.log` 是 `build:all`、`tsc`、`vitest` 的输出重定向文件。
+# 两者都不参与插件运行（`lib/` 是唯一产物目录，已单独忽略），
+# 放在这里是为了 `git add .` 不会把构建产物与运行日志带进公开仓库。
+dist/
+*.log
