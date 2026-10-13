@@ -452,7 +452,16 @@ describe('buddy fetchModels', () => {
             modelPromotions: [{
               enabled: true, priority: 200, modelIds: ['hy4-preview-f'],
               discount: { discountedCredits: '0x', factor: 0 },
-              schedule: { timezone: 'Asia/Shanghai', validFrom: '2026-09-11T00:00:00+08:00', validUntil: '2026-10-11T00:00:00+08:00' },
+              // ⚠️ 窗口必须**相对当前时间**构造：本用例走 `fetchModels`，它内部按
+              // `new Date()` 判活动是否生效，写死日期会让用例在窗口过期后必然变红
+              // （2026-10-13 实测：原先写死的 `validUntil` 2026-10-11 已过，
+              // 于是「免费」断言拿到 `undefined`）。
+              // 「窗口外不展示」的语义另由 `buddy.spec.ts` 显式传入 `now` 的用例覆盖。
+              schedule: {
+                timezone: 'Asia/Shanghai',
+                validFrom: new Date(Date.now() - 3_600_000).toISOString(),
+                validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+              },
             }],
           },
         }), { status: 200 }),
