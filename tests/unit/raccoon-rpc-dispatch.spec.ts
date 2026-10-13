@@ -20,16 +20,25 @@ describe('Raccoon 的 RPC 分派', () => {
   it('六条路径都已接上', () => {
     // ⚠️ 用「先定位分支起点，再在切片里查找」而不是大跨度正则 ——
     // 后者对字符数敏感（注释一变就误报），也难看出断裂处。
-    const branchOf = (anchor: string, size = 3000): string => {
-      const start = rpcSource.indexOf(anchor)
+    //
+    // ⚠️⚠️ `from` 参数是必需的（真实事故，2026-10-13）：`case RACCOON.id:`
+    // 在 `claimAllForProvider()`（`credits.claimAll` 的实现，每日自动签到与
+    // RPC 共用）里**也有一处**，从全文开头找会命中那一个，于是下面
+    // 「account.refresh 必须调 refreshAccountCredential」跑去看别的函数，
+    // 以「找不到该文本」失败 —— 根因与它要守的行为无关。
+    const branchOf = (anchor: string, from = 0, size = 3000): string => {
+      const start = rpcSource.indexOf(anchor, from)
       expect(start, `未找到锚点：${anchor}`).toBeGreaterThan(-1)
       return rpcSource.slice(start, start + size)
     }
+    /** `account.refresh` 分支的起点：其后才是各面板的刷新 case。 */
+    const refreshAt = rpcSource.indexOf("case 'account.refresh'")
 
     // account.create
     expect(branchOf('} else if (provider === RACCOON.id)')).toMatch(/raccoon\.startLogin\(\)/)
     // account.refresh
-    expect(branchOf('case RACCOON.id:')).toMatch(/raccoon\.refreshAccountCredential/)
+    expect(refreshAt).toBeGreaterThan(-1)
+    expect(branchOf('case RACCOON.id:', refreshAt)).toMatch(/raccoon\.refreshAccountCredential/)
     // credits.balances —— ⚠️ 该文件里 `if (req.provider === RACCOON.id)` 出现多次，
     // 故用**该分支独有的**注释锚点定位，避免命中 onboarding 的那一处。
     const balanceAnchor = rpcSource.indexOf('余额来自 `GET /points/v1/balance`')
@@ -97,16 +106,26 @@ describe('Raccoon 的 RPC 分派', () => {
   })
 
   it('account.create 的失败路径都删除占位条目（不留幽灵账号）', () => {
-    const createStart = rpcSource.indexOf('provider === RACCOON.id')
-    const branch = rpcSource.slice(createStart, createStart + 3000)
+    // ⚠️ 锚点限定在 `account.create` 之内（`provider === RACCOON.id` 在
+    // `claimAllForProvider()` 里也有同形文本 —— 见上面 `branchOf` 的说明）。
+    const createStart = rpcSource.indexOf("case 'account.create'")
+    expect(createStart).toBeGreaterThan(-1)
+    const branch = rpcSource.slice(
+      rpcSource.indexOf('provider === RACCOON.id', createStart),
+      rpcSource.indexOf('provider === RACCOON.id', createStart) + 3000,
+    )
     // startLogin 抛错 + 后台 catch 各一处
     const removals = branch.match(/pool\.removeAccount\(id\)/g)
     expect(removals?.length, '两处失败路径都应删占位条目').toBeGreaterThanOrEqual(2)
   })
 
   it('account.create 回填 refreshable（raccoon 有 refresh 端点）', () => {
-    const createStart = rpcSource.indexOf('provider === RACCOON.id')
-    const branch = rpcSource.slice(createStart, createStart + 3000)
+    // 同上：锚在 `account.create` 之内。
+    const createStart = rpcSource.indexOf("case 'account.create'")
+    expect(createStart).toBeGreaterThan(-1)
+    const at = rpcSource.indexOf('provider === RACCOON.id', createStart)
+    expect(at).toBeGreaterThan(-1)
+    const branch = rpcSource.slice(at, at + 3000)
     // ⚠️ 不能像 Loomy 那样写死 false
     expect(branch).toMatch(/refreshable:\s*result\.refreshable/)
   })

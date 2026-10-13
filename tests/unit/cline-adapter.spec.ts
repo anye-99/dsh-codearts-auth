@@ -38,11 +38,11 @@ const cred: ClineCredential = {
 
 /** 固定目录（离线；含免费与付费条目）。 */
 const MODELS: ClineModel[] = mergeClineModels(CLINE, {
-  freeIds: ['cline-free/deepseek-v4.1-flash', 'cline-free/gemini-3.8-flash'],
+  freeIds: ['cline-free/mimo-v2.6-flash', 'cline-free/step-5-preview'],
   remoteIds: ['deepseek/deepseek-v4.1-flash', 'openai/gpt-6-luna'],
   entries: [
-    { id: 'cline-free/deepseek-v4.1-flash', name: 'Deepseek-v4.1-Flash' },
-    { id: 'cline-free/gemini-3.8-flash', name: 'Gemini 3.8 Flash' },
+    { id: 'cline-free/mimo-v2.6-flash', name: 'Mimo-V2.6-Flash' },
+    { id: 'cline-free/step-5-preview', name: 'Step 5 Preview' },
   ],
 })
 
@@ -95,7 +95,7 @@ async function collect(
 ): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = []
   for await (const chunk of adapter.stream({
-    model: 'cline-free/deepseek-v4.1-flash',
+    model: 'cline-free/mimo-v2.6-flash',
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     ...options,
   } as never)) {
@@ -111,9 +111,9 @@ describe('ClineAdapter 模型目录', () => {
     const byId = new Map(models.map((m) => [m.id, m]))
     // 展示名优先取**兜底表**（内嵌目录的正式名，与 Cline IDE 显示一致，
     // 即用户截图里的 "DeepSeek V4.1 Flash (free)"），而非远端 slug
-    //（"Deepseek-v4.1-Flash"）。标记统一由 clineDisplayName 拼。
-    expect(byId.get('cline-free/deepseek-v4.1-flash')?.name).toBe('DeepSeek V4.1 Flash · 免费')
-    expect(byId.get('cline-free/gemini-3.8-flash')?.name).toBe('Gemini 3.8 Flash · 免费')
+    //（"Mimo-V2.6-Flash"）。标记统一由 clineDisplayName 拼。
+    expect(byId.get('cline-free/mimo-v2.6-flash')?.name).toBe('MiMo-V2.6-Flash · 免费')
+    expect(byId.get('cline-free/step-5-preview')?.name).toBe('Step 5 Preview · 免费')
   })
 
   it('付费模型不标免费（同名但不同命名空间）', async () => {
@@ -129,7 +129,7 @@ describe('ClineAdapter 模型目录', () => {
     const adapter = makeAdapter()
     const models = await adapter.listModels('cline')
     const ids = models.map((m) => m.id)
-    expect(ids).toContain('cline-free/deepseek-v4.1-flash')
+    expect(ids).toContain('cline-free/mimo-v2.6-flash')
     expect(ids).toContain('deepseek/deepseek-v4.1-flash')
     expect(ids).toContain('openai/gpt-6-luna')
   })
@@ -137,15 +137,15 @@ describe('ClineAdapter 模型目录', () => {
   it('listAllModels 也带免费标记（设置页能看到正确展示名）', () => {
     const adapter = makeAdapter()
     const models = adapter.listAllModels()
-    const entry = models.find((m) => m.id === 'cline-free/deepseek-v4.1-flash')
-    expect(entry?.name).toBe('DeepSeek V4.1 Flash · 免费')
+    const entry = models.find((m) => m.id === 'cline-free/mimo-v2.6-flash')
+    expect(entry?.name).toBe('MiMo-V2.6-Flash · 免费')
   })
 
-  it('未加载完成时 listAllModels 回退兜底表（仍含 5 个免费模型）', () => {
+  it('未加载完成时 listAllModels 回退兜底表（仍含 4 个免费模型）', () => {
     const adapter = makeAdapter({ loadModels: async () => { throw new Error('offline') } })
     const models = adapter.listAllModels()
     expect(models.length).toBe(CLINE.fallbackModels.length)
-    expect(models.filter((m) => m.name.includes('免费'))).toHaveLength(5)
+    expect(models.filter((m) => m.name.includes('免费'))).toHaveLength(4)
   })
 
   it('远端目录两个端点都失败时仍返回兜底表', async () => {
@@ -154,11 +154,11 @@ describe('ClineAdapter 模型目录', () => {
     })
     const models = await adapter.listModels('cline')
     expect(models.length).toBe(CLINE.fallbackModels.length)
-    expect(models.filter((m) => m.name.includes('免费'))).toHaveLength(5)
+    expect(models.filter((m) => m.name.includes('免费'))).toHaveLength(4)
   })
 
   it('黑名单过滤只作用于 listModels，不影响 listAllModels', async () => {
-    const disabled = new Set(['cline-free/deepseek-v4.1-flash'])
+    const disabled = new Set(['cline-free/mimo-v2.6-flash'])
     const adapter = makeAdapter({
       accountPool: {
         disabledModelsFor: () => disabled,
@@ -166,9 +166,9 @@ describe('ClineAdapter 模型目录', () => {
       } as never,
     })
     const listed = await adapter.listModels('cline')
-    expect(listed.map((m) => m.id)).not.toContain('cline-free/deepseek-v4.1-flash')
+    expect(listed.map((m) => m.id)).not.toContain('cline-free/mimo-v2.6-flash')
     // 设置页必须仍能看到它（否则无法重新打开）
-    expect(adapter.listAllModels().map((m) => m.id)).toContain('cline-free/deepseek-v4.1-flash')
+    expect(adapter.listAllModels().map((m) => m.id)).toContain('cline-free/mimo-v2.6-flash')
   })
 
   it('没有任何已登录账号时返回空数组（目录门控）', async () => {
@@ -190,20 +190,20 @@ describe('ClineAdapter 模型目录', () => {
 describe('ClineAdapter resolveModel', () => {
   it('name 不带免费标记（标记只属于选择列表语境）', async () => {
     const adapter = makeAdapter()
-    const resolved = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
-    expect(resolved.name).toBe('DeepSeek V4.1 Flash')
+    const resolved = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
+    expect(resolved.name).toBe('MiMo-V2.6-Flash')
     expect(resolved.name).not.toContain('免费')
   })
 
   it('声明 defaultMaxTokens（否则上限永久退回网关默认值）', async () => {
     const adapter = makeAdapter()
-    const resolved = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
+    const resolved = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
     expect(resolved.defaultMaxTokens).toBe(131_072)
   })
 
   it('声明 context（内嵌目录的 contextWindow）', async () => {
     const adapter = makeAdapter()
-    const resolved = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
+    const resolved = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
     expect(resolved.context?.contextWindow).toBe(1_048_576)
   })
 
@@ -217,7 +217,7 @@ describe('ClineAdapter resolveModel', () => {
 
   it('inputModalities 按模型判定（图片能力）', async () => {
     const adapter = makeAdapter()
-    const withImage = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
+    const withImage = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
     expect(withImage.inputModalities).toContain('image')
     const unknown = await adapter.resolveModel('cline', 'unknown/model-x')
     expect(unknown.inputModalities).toEqual(['text'])
@@ -225,7 +225,7 @@ describe('ClineAdapter resolveModel', () => {
 
   it('声明 5 档思考强度（顺序与展示名对齐 Cline IDE）', async () => {
     const adapter = makeAdapter()
-    const resolved = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
+    const resolved = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
     // ⚠️ id 是发给上游的 wire 值，name 是 IDE 上的展示名，两者**刻意不同**：
     // 最高档 wire 是 `max`，展示是 `Extra`（xhigh 实测与 high 无差异，故跳过）。
     expect(resolved.reasoning?.efforts).toEqual([
@@ -239,7 +239,7 @@ describe('ClineAdapter resolveModel', () => {
 
   it('默认档位是 high（对齐 IDE 截图的选中态）', async () => {
     const adapter = makeAdapter()
-    const resolved = await adapter.resolveModel('cline', 'cline-free/deepseek-v4.1-flash')
+    const resolved = await adapter.resolveModel('cline', 'cline-free/mimo-v2.6-flash')
     expect(resolved.reasoning?.defaultEffort).toBe('high')
   })
 
@@ -279,7 +279,7 @@ describe('ClineAdapter 请求构造', () => {
     })
     await collect(adapter)
     const body = JSON.parse(bodies[0]!) as Record<string, unknown>
-    expect(body.model).toBe('cline-free/deepseek-v4.1-flash')
+    expect(body.model).toBe('cline-free/mimo-v2.6-flash')
     expect(body.stream).toBe(true)
     expect(Array.isArray(body.messages)).toBe(true)
   })
@@ -883,7 +883,7 @@ describe('Cline 接线（源码级回归）', () => {
           id: 'cline-pass/kimi-k2.7-code', name: 'Kimi K2.7 Code', supportsImage: true,
         }],
         ['cline-pass/deepseek-v4.1-flash', {
-          id: 'cline-pass/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', supportsImage: true,
+          id: 'cline-pass/deepseek-v4.1-flash', name: 'MiMo-V2.6-Flash', supportsImage: true,
         }],
       ]),
     })
@@ -894,11 +894,11 @@ describe('Cline 接线（源码级回归）', () => {
     expect(byId.has('cline-pass/kimi-k2.7-code')).toBe(true)
     // ② 名字是可读的，不是裸 id
     expect(byId.get('cline-pass/kimi-k2.7-code')?.name).toBe('Kimi K2.7 Code')
-    expect(byId.get('cline-pass/deepseek-v4.1-flash')?.name).toBe('DeepSeek V4.1 Flash')
+    expect(byId.get('cline-pass/deepseek-v4.1-flash')?.name).toBe('MiMo-V2.6-Flash')
     // ③ 图片能力随之播报 —— DSH 据此才会把图片送进适配器
     expect(byId.get('cline-pass/kimi-k2.7-code')?.inputModalities).toEqual(['text', 'image'])
     // ④ 本地兜底表的策展条目不受影响
-    expect(byId.get('cline-free/gemini-3.8-flash')?.inputModalities).toEqual(['text', 'image'])
+    expect(byId.get('cline-free/step-5-preview')?.inputModalities).toEqual(['text', 'image'])
   })
 
   it('能力矩阵登记 cline 为「有余额、无签到、有订阅额度」', () => {

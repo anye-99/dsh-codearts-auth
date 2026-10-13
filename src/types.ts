@@ -56,7 +56,19 @@ export interface ProviderAccountEntry {
   expiresAt?: number
   /** 是否可静默续期 */
   refreshable: boolean
-  /** 每个模型的重置时间，key=模型ID（毫秒时间戳） */
+  /**
+   * 每个模型的重置时间，key=模型ID（毫秒时间戳）。
+   *
+   * ⚠️ **除真实模型 id 外，还可能是 {@link ALL_MODELS_RATE_LIMIT_KEY}**（`'*'`）——
+   * 表示「该账号**全部模型**都受限」。典型来源：Qoder 的日额度（业务码 110
+   * `Billing daily count exceeded`）实测按**账号**结算，换模型照样被拒
+   * （见 `account-pool.ts` 的常量注释与 `AGENTS.md`）。
+   *
+   * ⚠️ 因此**读取时不要自己内联 `limits[modelId]`** —— 用 `rateLimitedUntil()`，
+   * 它同时认两种键；「重测」路径用 `account-probe.ts` 的 `probeModelIdFor()`
+   * 把保留键换成真实模型。直接内联会漏判整账号标记（缺陷形态：用户换模型后
+   * 又被选中、立刻撞同一堵墙）。
+   */
   modelRateLimits?: Record<string, number>
   /**
    * TRAE 签到设备轮换代次（仅 `trae` provider 使用）。
@@ -80,6 +92,45 @@ export interface ProviderAccountStatus extends ProviderAccountEntry {
   refreshError?: string
   /** 来源（env/file 等） */
   source?: string
+  /**
+   * 该账号的凭据在 `ctx.credentials` 里**是否真的存在且非空**。
+   *
+   * ## 为什么需要它（不能靠 `credentialRef` 有值来推断）
+   *
+   * `account.create` 会**先**建一条无凭据的占位条目，凭据要等登录成功后才写入。
+   * 于是「条目存在 + credentialRef 有值」与「凭据真的可用」是两件事：
+   * 登录没走完（用户关掉面板、粘贴失败、DSH 重启丢了超时器）时，池里会留下一条
+   * **指向空气**的条目 —— 卡片显示「已启用」，而积分/签到一律报「凭据未配置」。
+   *
+   * ⚠️ 本字段**只回答存在性**，绝不返回凭据内容（那是密钥）。
+   * 判据是「resolve 到了且值去空白后非空」：写入空串等同于没配。
+   *
+   * ## 当前的消费方
+   *
+   * TeleAgent 面板用它恢复「等待粘贴回调地址」的入口：该面板是唯一需要
+   * 用户手动粘贴回调 URL 的（回调地址是服务端常量、协议也注册不了），
+   * 而粘贴框原先只由组件内存 state 控制 —— 重开设置页就永久消失，
+   * 用户既继续不了登录也看不到原因。现在据此把入口重新显示出来。
+   *
+   * 非凭据型条目（antigravity 的 `credentialRef` 为空串）**不带本字段**（undefined），
+   * 避免被误判成「待登录」。
+   */
+  credentialPresent?: boolean
+  /**
+   * 该账号**尚未完成登录**时可用的登录页地址（目前只有 TeleAgent 填充）。
+   *
+   * ## 为什么需要它
+   *
+   * TeleAgent 的粘贴框现在会从「条目在、凭据不在」的账号自动恢复，而那时
+   * 当初弹出的登录窗口**往往早就关了**。框里的提示让用户「重新打开天翼登录页
+   * 走完授权」，可界面上**没有任何链接可点** —— 登录页地址（含 `redirect_uri`）
+   * 此前只在 `account.create` 的一次性响应里给过，恢复路径拿不到，
+   * 用户只能自己去搜那个页面。
+   *
+   * ⚠️ 这是**产品常量**（`loginPageUrl()`），不含任何凭据或用户标识，
+   * 故可以安全地随账号列表下发。
+   */
+  loginUrl?: string
 }
 
 /** Jet Hub 在 ctx.settings 中的 schema */
@@ -317,6 +368,17 @@ export interface RpcCreditsClaimSummary {
 export interface RpcCreditsClaimAllResponse {
   results: RpcCreditsClaimAccountResult[]
   summary: RpcCreditsClaimSummary
+}
+
+/**
+ * RPC: 读写「每日自动签到」开关请求。
+ *
+ * ⚠️ 只有 `enabled` 一个可写字段。状态的其余部分（当天是否已签完、上次结果）
+ * 一律由 **host 侧执行器**产出 —— 面板若能写它们，就等于让客户端伪造「今天
+ * 已经签过了」，而那会让用户真的漏掉当天额度（本功能要消灭的正是这件事）。
+ */
+export interface RpcAutoCheckinSetRequest {
+  enabled: boolean
 }
 
 /**

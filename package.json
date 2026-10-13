@@ -61,6 +61,8 @@
     "test:e2e:minimax-claim": "cross-env DSH_MINIMAX_E2E=1 DSH_MINIMAX_CLAIM_E2E_CONFIRM=yes vitest run --config vitest.e2e.config.ts tests/e2e/minimax-claim-probe.e2e.spec.ts",
     "test:e2e:minimax-chat": "cross-env DSH_MINIMAX_CHAT_E2E=1 DSH_MINIMAX_CHAT_E2E_CONFIRM=yes vitest run --config vitest.e2e.config.ts tests/e2e/minimax-chat-probe.e2e.spec.ts",
     "test:e2e:minimax-image": "cross-env DSH_MINIMAX_IMAGE_E2E=1 DSH_MINIMAX_IMAGE_E2E_CONFIRM=yes vitest run --config vitest.e2e.config.ts tests/e2e/minimax-image-probe.e2e.spec.ts",
+    "test:e2e:teleagent": "cross-env DSH_TELEAGENT_E2E=1 vitest run --config vitest.e2e.config.ts tests/e2e/teleagent-probe.e2e.spec.ts",
+    "test:e2e:teleagent-chat": "cross-env DSH_TELEAGENT_E2E=1 DSH_TELEAGENT_CHAT_E2E=1 DSH_TELEAGENT_CHAT_CONFIRM=yes vitest run --config vitest.e2e.config.ts tests/e2e/teleagent-probe.e2e.spec.ts",
     "test:e2e:image-burst": "cross-env DSH_IMAGE_BURST_E2E=1 DSH_IMAGE_BURST_E2E_CONFIRM=yes vitest run --config vitest.e2e.config.ts tests/e2e/image-burst-cross-provider.e2e.spec.ts",
     "test:e2e:antigravity": "cross-env DSH_ANTIGRAVITY_E2E=1 vitest run --config vitest.e2e.config.ts tests/e2e/antigravity-probe.e2e.spec.ts"
   },

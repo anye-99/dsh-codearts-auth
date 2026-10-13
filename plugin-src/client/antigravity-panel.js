@@ -24,6 +24,23 @@
  * - **补齐缺失样式**：`dim-jh-hint` / `dim-jh-btn-sm` 此前被本面板使用但从未定义
  *   （说明文字没有弱化色、关闭按钮不缩小），现已在样式表补上；
  *   健康徽标补上缺失的 `disabled` 档配色。
+ *
+ * ## 2026-10-13 卡片列表结构改为与其余 13 家 1:1 相同（用户报障：卡片偏宽）
+ *
+ * **用户原话**：「调整这块的宽度，与其他厂商保持一致」，随后确认指的是
+ * **整张账号卡片相对其他厂商偏宽**。
+ *
+ * 根因是账号列表**多套了一层 agy 专属包装层** `.dim-jh-agy-cards`
+ * （`display: grid; gap: 10px`，另配 `.dim-jh-agy-cards .dim-jh-accountCard
+ * { margin-bottom: 0 }`），而其余 13 家是「无类名 div + 卡片自身的
+ * `margin-bottom: 10px`」（见 jet-hub.js 的 ProviderPanel）。卡片宽度本应由
+ * 容器决定、两者都撑满，但那层 grid 是**只有 Agy 有**的第二套布局规则 ——
+ * 卡片的宽度因此不再由共享样式单独决定，也就无法保证与别家一致。
+ *
+ * 现直接删掉该包装层与其两条样式，间距交回共享的 `margin-bottom: 10px`：
+ * 结构上不再存在「Agy 特有的第二套布局」，宽度即与其余 13 家同源。
+ * ⚠️ **不要再加回任何 agy 专属的卡片容器类** —— 那正是本次缺陷的形态
+ * （Agy 在共享卡片之外自成一套包装），与「UI 深度对齐」的承诺相悖。
  */
 
 import * as React from 'react';
@@ -605,8 +622,12 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
             ? h('p', { className: 'dim-jh-orderHint' },
                 '拖动卡片可调整顺序（也可直接拖整张卡片）。顺序即自动选号与限流换号的优先级，排在前面的账号优先使用。')
             : null,
-          h('div', { className: 'dim-jh-agy-cards' },
-            accounts.map((account, index) => {
+          /*
+           * ⚠️ 卡片列表**不再套 agy 专属包装层**（原 `.dim-jh-agy-cards` 已删）：
+           * 它的结构现与 ProviderPanel 的账号列表 1:1 相同 —— 无类名 div +
+           * 卡片自身的 `margin-bottom: 10px` 提供间距。理由见本文件头部说明。
+           */
+          accounts.map((account, index) => {
               const health = accountHealthOf(account);
               const hasIsolatedDir = typeof account.accountDir === 'string' && account.accountDir.length > 0;
               const shared = sharedCardOf(account, account.email || account.alias || account.id);
@@ -656,7 +677,6 @@ export function AntigravityPanel({ rpcCall, AccountCard, ModelListPanel, Subscri
                 ),
               });
             }),
-          ),
         ),
 
     // ── 5. 模态窗口 ──

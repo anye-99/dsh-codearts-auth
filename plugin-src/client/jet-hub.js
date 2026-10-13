@@ -12,6 +12,7 @@ import {
   checkinProviders,
 } from './credits-capabilities.js';
 import { orderAfterDrop, dropPositionFromPointer } from './account-order.js';
+import { pickTeleagentPendingAccountId } from './teleagent-login-restore.js';
 import {
   formatExpirySplitLine,
   formatPoolSplitLine,
@@ -41,6 +42,9 @@ import {
   groupModelsForDisplay,
 } from './model-groups.js';
 import { formatRowTokensPerSecond } from './tokens-per-second.js';
+// 「每日自动签到」状态条：判定与文案全在纯函数里（单测环境没有 react，
+// 组件只做渲染 —— 见该文件的模块头与 `tests/unit/auto-checkin-panel.spec.ts`）。
+import { describeAutoCheckin } from './auto-checkin-panel.js';
 import { AntigravityPanel } from './antigravity-panel.js';
 import { decryptBackup, encryptBackup, isEncryptedBackup } from './backup-crypto.js';
 
@@ -213,6 +217,19 @@ const MINIMAX_ICON = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAiIGhlaWdodD0i
  * 重新生成见 `.tmp-zcode/icon-gen.mjs`（不入库的本地工具）。
  */
 const ZCODE_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAgklEQVR42u3XsRGAIAyF4UxgYe0g7j+FpZtgRwN36stLAhruqP+v4ICIdNaybsViy92yCj+CeMW7CO94gwgFRMUrIgFTAPbzgPe/Aa5nAInTAGicAtDE1QBtXAVgxGEAeuIpAFYYArDj81xEoQDLd+A1ID8k3wTkXDDEaDbEcBo1nl/XXoK4yMqvMgAAAABJRU5ErkJggg==';
+/**
+ * Step Code（阶跃星辰）面板图标（内联 SVG data URL）。
+ *
+ * 与 LobsterAI / Qoder 同因用 SVG 而非位图：官方 `step.exe` 是小众产品，
+ * 没有可提取的独立小图标资源（发行包里只有文档用图），内联 SVG 体积小、
+ * 无色差，且在 `.dim-jh-providerIcon` 白底容器里显示清晰。
+ *
+ * 图形：深色圆角方块 + 一条**三级递升的折线** —— 呼应产品名里的 `Step`
+ * （阶跃星辰的品牌意象即「台阶/跃升」）。⚠️ 这是**自绘示意图标**，不是官方
+ * Logo：本地没取证到官方矢量资源，故在注释里如实写明来源，避免后人误以为
+ * 它是提取来的（Cline 那次「图标和官方的好像不一样」的报障教训）。
+ */
+const STEPCODE_ICON = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0Ij48cmVjdCB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHJ4PSI1IiBmaWxsPSIjMTYyMzNmIi8+PHBhdGggZD0iTTUgMTdoNC4ydi0zLjFoNC4xVjEwLjhoNC4xVjcuNiIgc3Ryb2tlPSIjNGRhM2ZmIiBzdHJva2Utd2lkdGg9IjIuMSIgZmlsbD0ibm9uZSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9zdmc+'
 
 /**
  * Antigravity 面板图标：内联 SVG 的 base64（与其他面板同法 ——
@@ -220,6 +237,9 @@ const ZCODE_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAA
  * 图形取「反重力」意象：一枚上升体加两道尾迹，蓝紫渐变底。
  */
 const ANTIGRAVITY_ICON = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAzMiAzMic+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSdnJyB4MT0nMCcgeTE9JzAnIHgyPScxJyB5Mj0nMSc+PHN0b3Agb2Zmc2V0PScwJyBzdG9wLWNvbG9yPScjMjU2M2ViJy8+PHN0b3Agb2Zmc2V0PScxJyBzdG9wLWNvbG9yPScjYTg1NWY3Jy8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9JzMyJyBoZWlnaHQ9JzMyJyByeD0nNycgZmlsbD0ndXJsKCNnKScvPjxwYXRoIGQ9J00xNiA1LjVjMy40IDIuNiA1LjIgNi4zIDUuMiAxMEwxNiAyNWwtNS4yLTkuNWMwLTMuNyAxLjgtNy40IDUuMi0xMHonIGZpbGw9JyNmZmYnLz48Y2lyY2xlIGN4PScxNicgY3k9JzEzLjgnIHI9JzIuMycgZmlsbD0nIzIzM2E4ZicvPjxwYXRoIGQ9J00xMCAyMS41IDYuOCAyN2w1LjYtMi40TTIyIDIxLjUgMjUuMiAyN2wtNS42LTIuNCcgc3Ryb2tlPScjZmZmJyBzdHJva2Utd2lkdGg9JzEuNycgZmlsbD0nbm9uZScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJy8+PC9zdmc+";
+
+/** TeleAgent（星辰超级智能体，中国电信天翼 AI）图标：取自官方安装包 app.asar 的 dist/logo.png，缩到 128px 保透明通道。 */
+const TELEAGENT_ICON = 'data:image/png;base64,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';
 
 const PROVIDERS = Object.freeze([
   { id: 'codearts', label: 'CodeArts (华为云)', icon: CODEARTS_ICON, logoClass: 'codearts' },
@@ -254,9 +274,34 @@ const PROVIDERS = Object.freeze([
    * 故它**不需要任何特殊分支** —— 与其余 provider 共用同一条
    * 「弹窗 + 登录轮询」路径。
    */
+  // TeleAgent（星辰超级智能体，中国电信天翼 AI）—— **凭据型**面板。
+  // ⚠️ label 与 `TELEAGENT.displayName` 逐字一致（见 teleagent-product.ts），
+  // 且长度受 rail 宽度算式约束（见上面 workbuddy 那条）。
+  // ⚠️ 顺序：插在 minimax 与 zcode 之间，与 `REF_PREFIX_TO_PROVIDER`
+  //   及 `registerJetHubRpc` 的形参顺序**三处对齐**（便于逐项核对）。
+  { id: 'teleagent', label: 'TeleAgent (电信)', icon: TELEAGENT_ICON, logoClass: 'teleagent' },
   { id: 'zcode', label: 'ZCode (智谱)', icon: ZCODE_ICON, logoClass: 'zcode' },
   /**
-   * Antigravity（Google，第 14 个面板）——**唯一一个不由本插件实现协议的面板**。
+   * Step Code（阶跃星辰）—— **第 15 个面板、凭据型**。
+   *
+   * ⚠️ label 用 `Step Code (阶跃)`，与 `STEPCODE.displayName` **逐字一致**
+   * （见 src/stepcode-product.ts）；长度也刻意控制在不会触发换行/省略号的
+   * 范围内（见上面 workbuddy 那条的 rail 宽度算式）。
+   *
+   * ⚠️ 它走**标准两步式登录**（与 codearts / qoder / minimax / zcode 同型）：
+   * 后端立刻返回 `https://platform.stepfun.com/cli-login-remote?flow_id=…`，
+   * 前端弹窗、用户在浏览器授权，后端轮询 `/api/stdhttp/v1/cli-login/poll/{id}`
+   * 拿到 `credential.api_key`。
+   * ⇒ **不需要任何特殊分支**：没有粘贴框（不像 teleagent）、没有扩展动词、
+   *   没有自动浏览器登录（不像 teleagent 的 CDP 那条），与其余面板共用
+   *   同一条「弹窗 + `login.poll`」路径。
+   *
+   * ⚠️ 顺序：插在 zcode 与 antigravity 之间，与 `REF_PREFIX_TO_PROVIDER`
+   *   及 `registerJetHubRpc` 的形参顺序**三处对齐**（antigravity 恒为最后一个）。
+   */
+  { id: 'stepcode', label: 'Step Code (阶跃)', icon: STEPCODE_ICON, logoClass: 'stepcode' },
+  /**
+   * Antigravity（Google）—— **最后一个面板、非凭据型**。
    *
    * 其余面板都是「本插件自己实现 OAuth + HTTP，凭据进 `ctx.credentials`，
    * 账号进本插件的账号池」。Antigravity 不成立：它的凭据由**官方 `agy`
@@ -279,6 +324,13 @@ const PROVIDERS = Object.freeze([
  * 面板内所有「是不是 agy」的判据都走这个常量，不要各处写字面量。
  */
 const ANTIGRAVITY_PANEL_ID = 'antigravity';
+
+/**
+ * TeleAgent 面板 id 常量（与 `PROVIDERS` 里的条目、服务端 `TELEAGENT.id`
+ * 逐字节一致）。面板内所有「是不是 teleagent」的判据都走这个常量，
+ * 不要各处写字面量（与上面 ANTIGRAVITY_PANEL_ID 同一约定）。
+ */
+const TELEAGENT_PANEL_ID = 'teleagent';
 
 /**
  * 积分能力判定见 `./credits-capabilities.js`。
@@ -326,6 +378,18 @@ const RETEST_ALL_HELP = '对本页全部账号（含已停用）执行「重测�
 const RESET_HELP = '直接清除本账号的全部「限额重置」标记，不发送任何请求。'
   + '适用于你已确认额度恢复、只想清掉显示的情况。';
 const RESET_ALL_HELP = '直接清除本页全部账号（含已停用）的「限额重置」标记，不发送任何请求。';
+
+/**
+ * 服务端 `modelRateLimits` 里表示「**整账号全部模型**受限」的保留键。
+ *
+ * ⚠️ 必须与服务端 `src/account-pool.ts` 的 `ALL_MODELS_RATE_LIMIT_KEY`
+ * **保持同值**。这里是客户端 bundle（esbuild 打成独立 CJS），**不能** import
+ * 服务端模块，故只能各写一份 —— 改一处必须同步另一处。
+ *
+ * 用途：徽章把它渲染成「全部模型」而不是一个看不懂的 `*`。典型来源是 Qoder
+ * 的日额度受限（code 110），实测按**账号**结算，与选哪个模型无关。
+ */
+const ALL_MODELS_LIMIT_LABEL_KEY = '*';
 
 /**
  * 「显示列表」按钮的说明。
@@ -697,8 +761,10 @@ function AccountCard({ account, index, order, provider, onToggle, onDelete, onRe
             React.createElement('span', {
               key: modelId,
               className: 'dim-jh-ttlBadge',
-              title: `模型 ${modelId}`,
-            }, `${modelId} · ${formatTime(resetAt)}`)))
+              title: modelId === ALL_MODELS_LIMIT_LABEL_KEY
+                ? '该账号当日额度已用尽（按账号结算，所有模型均受限）'
+                : `模型 ${modelId}`,
+            }, `${modelId === ALL_MODELS_LIMIT_LABEL_KEY ? '全部模型' : modelId} · ${formatTime(resetAt)}`)))
       : null,
     React.createElement('div', { className: 'dim-jh-accountActions' },
       // 新手任务（仅 Loomy）：一次性 10000 分，每号只能领一次。
@@ -1890,6 +1956,51 @@ function ProviderPanel({ provider, rpcCall }) {
   const [loginUrlForManual, setLoginUrlForManual] = React.useState(null);
 
   /**
+   * TeleAgent 的「等待粘贴回调地址」状态。
+   *
+   * ⚠️ 为什么只有这个 provider 需要它：TeleAgent 的登录回调地址是**服务端常量**
+   * （`LOGIN_PAGE` 写死在官方 asar，没有 `redirect_uri` 可配），而它的
+   * `teleai-cowork://` 协议本插件也注册不了 —— 后端既起不了本地监听、
+   * 也接不到协议回调，只能请用户把授权产物粘回来。
+   *
+   * ⚠️ **但用户要粘的不是地址栏那一串**（2026-10-07 实测，本注释此前写反了）：
+   * 授权完成后地址栏落在 `…/cowork/auth?code=ucc.XXXXXX`，**只有 code、
+   * 没有 token**；token 装在唤起桌面端的 `teleai-cowork://auth?token=…`
+   * deeplink 里、被官方客户端**拦截导航**取走，从不出现在地址栏。
+   * 权威判据见 `src/teleagent.ts` 的 `parseTeleagentCallbackInput`。
+   * 下面那个提示框的文案必须与它一致 —— 曾经按「地址栏最终 URL」写指引，
+   * 直接导致用户反复粘贴失败。
+   *
+   * 提交入口是扩展动词 `teleagent.loginSubmitCallback`，
+   * 与 Antigravity 的「loopback 绑不上时降级为人工粘码」是同一处置思路。
+   *
+   * `pending` 存的是本次登录的 accountId（null 表示没有进行中的粘贴流程）。
+   */
+  const [teleagentPending, setTeleagentPending] = React.useState(null);
+  const [teleagentCallback, setTeleagentCallback] = React.useState('');
+  const [teleagentSubmitting, setTeleagentSubmitting] = React.useState(false);
+  const [teleagentError, setTeleagentError] = React.useState(null);
+  /**
+   * TeleAgent 浏览器自动登录（CDP）的进行状态。
+   *
+   * `idle` 没开始 / `running` 浏览器已开、等用户登录 / `done` 成功 / `failed` 失败。
+   * 后端是 fire-and-forget（一次登录要几十秒到几分钟，不能阻塞 RPC），
+   * 所以这里靠轮询 `teleagent.loginBrowserStatus` 收敛 ——
+   * 与本面板「先返回 loginUrl、后台等提交」的两步式同构。
+   */
+  const [teleagentBrowser, setTeleagentBrowser] = React.useState({ phase: 'idle', note: null });
+  /**
+   * 待登录账号的登录页地址（由 `account.list` 随条目下发，见 `loginUrl` 字段）。
+   *
+   * 为什么不能复用 `loginUrlForManual`：那个只在 `window.open` **被拦截**时赋值，
+   * 而粘贴框现在会从「条目在、凭据不在」的账号自动恢复 —— 那一刻当初的弹窗
+   * 早就不存在了，`loginUrlForManual` 必然是 null，于是提示叫用户
+   * 「重新打开天翼登录页」却无处可点。故按 accountId 从列表里取。
+   */
+  const teleagentLoginPage = teleagentPending === null ? null
+    : (accounts.find((a) => a?.id === teleagentPending)?.loginUrl ?? null);
+
+  /**
    * 拖拽排序状态：正在拖的账号 id 与当前悬停的目标账号 id。
    *
    * 两者都只用于**视觉反馈**（源卡片淡出、目标卡片显示插入线），
@@ -1921,6 +2032,19 @@ function ProviderPanel({ provider, rpcCall }) {
       const list = res.accounts || [];
       accountsRef.current = list;
       setAccounts(list);
+      // TeleAgent：从「条目还在、凭据没写」的账号恢复粘贴入口。
+      //
+      // ⚠️ 为什么必须做这一步：TeleAgent 是唯一要用户**手动粘贴回调 URL** 的面板，
+      // 而粘贴框此前只由本组件的内存 state 控制；面板在切换 provider 时会被
+      // 强制重新挂载（见 JetHubPage 的 panelEpoch），重开设置页亦然 ——
+      // 于是用户一离开就永久失去粘贴入口，只剩一条显示「已启用」、
+      // 积分却报「凭据未配置」的假账号，且界面上没有任何办法继续那次登录。
+      //
+      // 判据与边界（为何严格 `credentialPresent === false`、为何不覆盖
+      // 正在输入的框、多条为何取最新）都在 `teleagent-login-restore.js` 里。
+      if (provider === TELEAGENT_PANEL_ID) {
+        setTeleagentPending((current) => pickTeleagentPendingAccountId(list, current));
+      }
       setPhase('ready');
     } catch (caught) {
       if (!mounted.current) return;
@@ -2235,6 +2359,15 @@ function ProviderPanel({ provider, rpcCall }) {
           // 'error' 阶段渲染，设了也看不见；提示由下面的 loginUrlForManual 区块负责。
           setLoginUrlForManual(loginUrl);
         }
+        // ⚠️ TeleAgent：回调打到**服务端页面**（不是本地端口、也不是我们注册的协议），
+        // 后端拿不到 token ⇒ 必须请用户把最终 URL 粘回来。下面的轮询照常跑
+        //（`login.poll` 判的是「凭据是否已写入」，而凭据由粘贴提交那条路写入），
+        // 所以用户粘贴成功后，这里会自动收敛、关掉登录窗。
+        if (provider === TELEAGENT_PANEL_ID) {
+          setTeleagentPending(accountId);
+          setTeleagentCallback('');
+          setTeleagentError(null);
+        }
         // 轮询等待登录完成
         const pollTimer = setInterval(async () => {
           try {
@@ -2243,7 +2376,30 @@ function ProviderPanel({ provider, rpcCall }) {
               clearInterval(pollTimer);
               if (loginWindow && !loginWindow.closed) loginWindow.close();
               setLoginUrlForManual(null);
+              setTeleagentPending(null);
+              setTeleagentCallback('');
+              setTeleagentError(null);
               await loadAccounts();
+              // ⚠️️ **登录成功必须连积分一起刷新**（三处入口同修，见
+              // `submitTeleagentCallback` 与 `startTeleagentBrowserLogin`）。
+              //
+              // **真实缺陷**（用户 2026-10-09 截图：昵称「TeleAgent 2794」、
+              // 有效期「11月7日 17:59」都已回填，积分那一行却还是「凭据未配置」，
+              // 而凭据此刻确实在密钥库里）。根因不是凭据坏了、也不是解析失败：
+              //
+              // 面板挂载时 `loadAccounts()` 与 `loadCredits()` **并发**发起
+              //（见下面的 useEffect）。用户正是在那一刻前后点的「新建账号」，
+              // 于是 `credits.balances` 查到的是一条**还没有凭据的占位条目**，
+              // 后端如实回 `error:'凭据未配置'`。登录成功后这条链路只调了
+              // `loadAccounts()` —— 昵称与有效期（都来自 account.list）当场变对，
+              // **唯独积分行留在挂载那次的答案上**，直到用户手动点「刷新积分」
+              // 或重开设置页才会纠正。
+              //
+              // ⚠️ 判据「凭据已写入」由后端保证：`login.poll` 的 `done` 就是
+              // 「凭据是否已写入」，`submitLogin` 也在 `credentials.set` **之后**
+              // 才落定 —— 所以这里再查一次必然看得见新凭据，不会读到同一个
+              // 中间态（那才是这条修复真正的正确性所在）。
+              if (canLoadCredits) await loadCredits();
             }
           } catch { /* 继续轮询 */ }
         }, 1000);
@@ -2258,6 +2414,141 @@ function ProviderPanel({ provider, rpcCall }) {
       setPhase('error');
     } finally {
       setCreating(false);
+    }
+  };
+
+  /**
+   * 提交 TeleAgent 的登录回调地址（唯一需要人工粘贴的面板，原因见
+   * `teleagentPending` 的注释）。
+   *
+   * ⚠️ 成功后**必须在这里主动收敛**，不能等 `login.poll` 的轮询：
+   * 那条轮询 300 秒后就 `clearInterval` 了，而后端的粘贴窗口是 10 分钟 ——
+   * 用户在第 6 分钟粘回来时轮询早已停止，不主动收敛就会看到
+   * 「明明提交成功了，界面却还停在等待粘贴」。
+   */
+  const submitTeleagentCallback = async () => {
+    const accountId = teleagentPending;
+    if (accountId === null) return;
+    const callback = teleagentCallback.trim();
+    if (callback.length === 0) {
+      setTeleagentError('请先粘贴授权完成后的回调地址（或直接粘贴 token）。');
+      return;
+    }
+    setTeleagentSubmitting(true);
+    setTeleagentError(null);
+    try {
+      const res = await rpcCall('teleagent.loginSubmitCallback', { accountId, callback });
+      if (res?.done) {
+        setTeleagentPending(null);
+        setTeleagentCallback('');
+        await loadAccounts();
+        // 与 `login.poll` 那条同因同修：昵称/有效期来自 account.list（刷新了就对），
+        // 积分行来自 `credits.balances`，不一起刷就会停在挂载那次的「凭据未配置」。
+        if (canLoadCredits) await loadCredits();
+      } else {
+        const message = res?.error || '提交失败，请检查粘贴内容是否完整。';
+        setTeleagentError(message);
+        // ⚠️ 失败也要刷新列表。动机：账号条目可能已被 `startLogin` 的超时器删掉
+        // （`account.create` 挂的 `.catch()` 会 `removeAccount`），而粘贴框只由
+        // 内存 state 控制、不知道条目已经没了 —— 不刷新就会让框**永久挂在一条
+        // 不存在的账号上**，用户怎么点都只得到「账号不存在」，只能重开设置页。
+        // 刷新后 `pickTeleagentPendingAccountId` 发现它不在等待集合 ⇒ 自动收框；
+        // 条目若还在（只是 token 无效），则保持原样让用户能继续重试。
+        await loadAccounts();
+        // 框被收掉时，这条错误就没了渲染位置（它画在框内部）⇒ 冒泡到面板顶部，
+        // 否则用户只会看到框「凭空消失」而不知道为什么。
+        if (!accountsRef.current.some((a) => a?.id === accountId)) setError(message);
+      }
+    } catch (caught) {
+      setTeleagentError(caught?.message || '提交失败');
+    } finally {
+      setTeleagentSubmitting(false);
+    }
+  };
+
+  /**
+   * 改用 CDP 受控浏览器自动登录（用户不必再手动粘 token）。
+   *
+   * 只在**已有待登录条目**时可点 —— accountId 必须先存在，凭据才有落点。
+   * 后端立即返回（一次登录要几十秒到几分钟，不能阻塞 RPC），
+   * 完成与否靠轮询 `loginBrowserStatus` 收敛。
+   *
+   * ⚠️ 失败时**不收起粘贴框**：自动登录可能因为「没装浏览器 / 窗口被关 /
+   * 安全软件拦调试端口」而失败，粘贴那条路必须始终留着当退路。
+   */
+  const startTeleagentBrowserLogin = async () => {
+    const accountId = teleagentPending;
+    if (accountId === null) return;
+    setTeleagentError(null);
+    setTeleagentBrowser({ phase: 'running', note: '正在打开受控浏览器…' });
+    try {
+      const res = await rpcCall('teleagent.loginWithBrowser', { accountId });
+      if (res?.started !== true) {
+        setTeleagentBrowser({
+          phase: 'idle',
+          note: res?.reason === 'already-running' ? '已有一次自动登录在进行中。' : null,
+        });
+        return;
+      }
+      const deadline = Date.now() + 6 * 60_000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        if (!mounted.current) return;
+        const got = await rpcCall('teleagent.loginBrowserStatus', { accountId });
+        const status = got?.status ?? { phase: 'idle' };
+        if (status.phase === 'done') {
+          setTeleagentBrowser({ phase: 'done', note: '登录成功。' });
+          setTeleagentPending(null);
+          setTeleagentCallback('');
+          await loadAccounts();
+          // 同前两条登录入口：自动登录成功后也要把积分行刷正，
+          // 否则卡片停在挂载那次查到的「凭据未配置」（见 `login.poll` 处的详注）。
+          if (canLoadCredits) await loadCredits();
+          return;
+        }
+        if (status.phase === 'failed') {
+          setTeleagentBrowser({
+            phase: 'failed',
+            note: `${status.error || '自动登录失败'}——仍可用下面的粘贴方式完成。`,
+          });
+          await loadAccounts();
+          return;
+        }
+        setTeleagentBrowser({
+          phase: 'running',
+          note: status.progress ?? '等待你在浏览器窗口里完成登录…',
+        });
+      }
+      setTeleagentBrowser({ phase: 'failed', note: '自动登录超时——仍可用下面的粘贴方式完成。' });
+    } catch (caught) {
+      setTeleagentBrowser({ phase: 'failed', note: caught?.message || '自动登录请求失败' });
+    }
+  };
+
+  /**
+   * 放弃本次 TeleAgent 登录。
+   *
+   * ⚠️ **必须真的删掉那条占位账号**，不能只收起粘贴框：粘贴框现在会在每次刷新时
+   * 从「条目在、凭据不在」的账号自动恢复（见 `loadAccounts`），只收框的话
+   * 下一次刷新它就又弹出来，用户永远关不掉。
+   *
+   * 而留着这条无凭据占位条目本身也没有任何价值 —— 它不参与推理（拿不到凭据），
+   * 只会让积分/签到持续报「凭据未配置」，并让卡片看起来像个已登录的账号。
+   *
+   * 删除失败时**不静默**：把错误显示出来（此时框会被下次刷新恢复，
+   * 用户至少能看到为什么关不掉，而不是以为界面坏了）。
+   */
+  const cancelTeleagentLogin = async () => {
+    const accountId = teleagentPending;
+    setTeleagentPending(null);
+    setTeleagentCallback('');
+    setTeleagentError(null);
+    if (accountId === null) return;
+    try {
+      await rpcCall('account.delete', { accountId });
+      await loadAccounts();
+    } catch (caught) {
+      setTeleagentError(caught?.message || '取消失败：未能删除这条未完成的账号');
     }
   };
 
@@ -2639,6 +2930,115 @@ function ProviderPanel({ provider, rpcCall }) {
           target: '_blank',
           rel: 'noopener noreferrer',
         }, loginUrlForManual))
+      : null,
+    // TeleAgent：等待用户粘贴授权回调地址（该面板唯一的非全自动登录路径）。
+    teleagentPending !== null
+      ? React.createElement('div', {
+          className: 'dim-jh-probeNotice',
+          'data-tone': 'warn',
+          role: 'status',
+        },
+        React.createElement('div', { style: { marginBottom: '6px' } },
+          // ⚠️️ 这段指引**已被实测推翻两次，别再改回去**：
+          // ① 「复制地址栏最终那串地址（形如 …code=…&token=…）」——
+          //    地址栏**只有 code、没有 token**（2026-10-07 用户截图证伪）。
+          // ② 「F12 → Console 复制 teleai-cowork:// 那条链接」——
+          //    Console 里**也没有**：浏览器不把唤起桌面端那一跳打印进 Console，
+          //    而桌面端日志只记 `route: 'auth'`、不记 URL
+          //   （2026-10-08 用户截图再次证伪：Console 里只有 `SideBar.*.js`
+          //     的页面日志和无关的统计拦截错误）。
+          // ⇒ 唯一能看到 token 的地方是 **Network 面板**。机制与依据见
+          //    docs/teleagent-protocol-notes.md §3 与 src/teleagent.ts 的
+          //    parseTeleagentCallbackInput 注释 —— 三处必须同向。
+          // ⚠️ 也别改成「让用户粘 code、由我们去换」：code **一次性**，
+          //    浏览器消费后再打同一 code，返回与假 code 逐字节相同的
+          //    `get token error`（2026-10-08 实测）⇒ 没有对我们开放的交换端点。
+          '地址栏和 Console 里都',
+          React.createElement('strong', null, '没有 token'),
+          '（地址栏只有一次性的 code，而浏览器不会把唤起桌面端那一跳打印进 Console）。',
+          '请这样取：',
+          React.createElement('br'),
+          '① 按 F12 打开 ',
+          React.createElement('strong', null, 'Network'),
+          ' 并勾选「保留日志」；',
+          React.createElement('br'),
+          '② 重新完成一次天翼授权；',
+          React.createElement('br'),
+          '③ 点开那条 ',
+          React.createElement('code', null, 'cowork/auth?code=…'),
+          ' 请求，在它的 ',
+          React.createElement('strong', null, 'Location 响应头'),
+          ' 或 ',
+          React.createElement('strong', null, '响应体'),
+          ' 里找到 ',
+          React.createElement('code', null, 'token='),
+          '，把那串 token 粘到下面（含 token 的整条链接也可以）。',
+          React.createElement('br'),
+          // 这个框现在会在重开面板后自动恢复（见 loadAccounts），而那时
+          // 当初弹出的登录窗口往往早就关了 —— 给出可点的登录页链接，
+          // 而不是只叫用户「重新打开天翼登录页」却无处可点。
+          teleagentLoginPage
+            ? React.createElement('span', { className: 'dim-jh-hint' },
+                '需要重新授权？登录页：',
+                React.createElement('a', {
+                  href: teleagentLoginPage,
+                  target: '_blank',
+                  rel: 'noopener noreferrer',
+                }, '天翼账号登录'),
+                '（不必重建账号）')
+            : React.createElement('span', { className: 'dim-jh-hint' },
+                '若那个登录窗口已经关闭：重新走一次授权即可（不必重建账号）。')),
+        React.createElement('textarea', {
+          className: 'dim-jh-textarea',
+          rows: 2,
+          placeholder: '粘贴 token（或含 token= 的整条链接）…',
+          value: teleagentCallback,
+          disabled: teleagentSubmitting,
+          onPaste: (event) => {
+            // 用户从地址栏复制时**必然**会带一个尾部换行，
+            // 而裸 token 形态的判据是「不含空白」⇒ 不 trim 会把有效 token 判成
+            // 「无法识别：请粘贴完整回调 URL」。这里在粘贴时就清掉首尾空白。
+            event.preventDefault();
+            const text = (event.clipboardData || window.clipboardData).getData('text');
+            setTeleagentCallback(String(text || '').trim());
+          },
+          onChange: (event) => setTeleagentCallback(event.target.value),
+        }),
+        teleagentError
+          ? React.createElement('div', {
+              className: 'dim-jh-textareaError',
+              role: 'alert',
+            }, teleagentError)
+          : null,
+        // 自动登录的进行/失败提示。失败时**不收起粘贴框** —— 它是退路。
+        teleagentBrowser.phase !== 'idle'
+          ? React.createElement('div', {
+              className: teleagentBrowser.phase === 'failed'
+                ? 'dim-jh-textareaError'
+                : 'dim-jh-hint',
+              role: 'status',
+            }, teleagentBrowser.note ?? '')
+          : null,
+        React.createElement('div', {
+          style: { display: 'flex', gap: '8px', marginTop: '6px' },
+        },
+        React.createElement('button', {
+          className: 'dim-jh-btn',
+          'data-kind': 'primary',
+          disabled: teleagentSubmitting || teleagentBrowser.phase === 'running',
+          onClick: submitTeleagentCallback,
+        }, teleagentSubmitting ? '提交中…' : '完成登录'),
+        // 首选路径：起受控浏览器，用户只管登录，token 由插件从网络层取。
+        React.createElement('button', {
+          className: 'dim-jh-btn',
+          disabled: teleagentSubmitting || teleagentBrowser.phase === 'running',
+          onClick: startTeleagentBrowserLogin,
+        }, teleagentBrowser.phase === 'running' ? '自动登录中…' : '浏览器自动登录'),
+        React.createElement('button', {
+          className: 'dim-jh-btn',
+          disabled: teleagentSubmitting || teleagentBrowser.phase === 'running',
+          onClick: cancelTeleagentLogin,
+        }, '取消')))
       : null,
     phase === 'loading'
       ? React.createElement('div', { className: 'dim-jh-empty' }, '正在读取账号列表…')
@@ -3213,6 +3613,16 @@ export function JetHubPage({ close, rpcCall }) {
   const [checkinBusy, setCheckinBusy] = React.useState(false);
   const [checkinNotice, setCheckinNotice] = React.useState(null);
   /**
+   * 「每日自动签到」快照（RPC `checkin.auto.get`）。
+   *
+   * `null` = 尚未读回 / 读取失败 / host 未装配 —— 三种情况都**整条不渲染**
+   * （见 `describeAutoCheckin` 的说明：可选功能读不到时不该在每次打开设置页
+   * 都挂一条报错）。
+   */
+  const [autoCheckin, setAutoCheckin] = React.useState(null);
+  /** 提交开关时的忙态（只禁用那一个按钮）。 */
+  const [autoCheckinBusy, setAutoCheckinBusy] = React.useState(false);
+  /**
    * 供应商级状态（provider id → ProviderStatus），driving 左侧分组与页头弹窗里的开关。
    *
    * `null` = 尚未读取成功（分组退化为不分组平铺，弹窗里的开关全部禁用）——
@@ -3274,10 +3684,63 @@ export function JetHubPage({ close, rpcCall }) {
     }
   }, [rpcCall]);
 
+  /**
+   * 读「每日自动签到」快照。
+   *
+   * **失败不提示、整条不渲染**：它是可选功能，而 `checkin.auto.get` 在
+   * headless profile / 未装配调度器的宿主上必然回
+   * `jet-hub/auto-checkin-unavailable` —— 每次打开设置页都为此挂一条红条，
+   * 属于把「本进程不提供该功能」渲染成故障（与「对不支持的 provider 无条件
+   * 发请求」那条历史教训同一取向）。控制台留线索，界面保持安静。
+   */
+  const loadAutoCheckin = React.useCallback(async () => {
+    try {
+      const res = await rpcCall('checkin.auto.get', {});
+      if (!mounted.current) return;
+      setAutoCheckin(res && typeof res === 'object' ? res : null);
+    } catch (caught) {
+      console.error('[jet-hub] load auto checkin failed:', caught);
+      if (mounted.current) setAutoCheckin(null);
+    }
+  }, [rpcCall]);
+
+  // ⚠️ 顺序不可颠倒：`loadAutoCheckin` 必须定义在**本 effect 之前** ——
+  // 依赖数组在渲染时立即求值，写在后面会命中 `const` 的 TDZ
+  //（`Cannot access 'loadAutoCheckin' before initialization`），
+  // 表现为整页白屏。
   React.useEffect(() => {
     mounted.current = true;
     void loadProviderStatuses();
-  }, [loadProviderStatuses]);
+    void loadAutoCheckin();
+  }, [loadProviderStatuses, loadAutoCheckin]);
+
+  /**
+   * 切换「每日自动签到」开关。
+   *
+   * ⚠️ **不做乐观更新**：开关控制的是「每次打开 DSH 会发十路写请求」这件事，
+   * 本地先翻过去再等服务端确认，会在服务端拒绝时留下一个「看起来开着、
+   * 实际没开」的开关 —— 用户不会再去核对。以服务端返回的快照为准。
+   * （与 `toggleProvider` 的取舍一致。）
+   */
+  const toggleAutoCheckin = async () => {
+    if (!autoCheckin || autoCheckinBusy) return;
+    setAutoCheckinBusy(true);
+    try {
+      const res = await rpcCall('checkin.auto.set', { enabled: autoCheckin.enabled !== true });
+      if (mounted.current) setAutoCheckin(res && typeof res === 'object' ? res : autoCheckin);
+    } catch (caught) {
+      console.error('[jet-hub] toggle auto checkin failed:', caught);
+      if (mounted.current) {
+        // 失败走既有的签到提示位（复用同一条样式的消息区，不新造一处）。
+        setCheckinNotice({
+          tone: 'error',
+          text: `切换每日自动签到失败：${caught?.message || '未知错误'}`,
+        });
+      }
+    } finally {
+      if (mounted.current) setAutoCheckinBusy(false);
+    }
+  };
 
   const selectProvider = (id) => {
     setSelected(id);
@@ -3510,6 +3973,18 @@ export function JetHubPage({ close, rpcCall }) {
    */
   const providerSummary = providerToggleSummary(PROVIDERS, providerStatuses);
 
+  /**
+   * 「每日自动签到」状态条的文案与配色。
+   *
+   * 判定**全部**在纯函数里（`auto-checkin-panel.js`），这里只把结果喂给渲染 ——
+   * 单测环境没有 react，放这里就无法被真实调用（见该文件模块头）。
+   * `null` 表示读不到 / 未装配 ⇒ 整条不渲染。
+   */
+  const autoCheckinView = describeAutoCheckin(
+    autoCheckin,
+    (id) => PROVIDERS.find(p => p.id === id)?.label,
+  );
+
   return React.createElement('section', { className: 'dim-jh-page', 'aria-label': 'Jet Hub Provider 设置' },
     React.createElement('header', { className: 'dim-jh-header' },
       React.createElement('div', { className: 'dim-jh-brand' },
@@ -3549,6 +4024,36 @@ export function JetHubPage({ close, rpcCall }) {
           className: 'dim-jh-btn',
           onClick: close,
         }, '关闭') : null)),
+    // 「每日自动签到」状态条。
+    //
+    // ⚠️ 放在**页头下方**而不是页头里：页头那排按钮已经排满，多一个会把
+    // 「关闭」挤到第二行（与本文件既有的按钮宽度注释同因）。开关做成条内的
+    // 按钮而非页头 checkbox —— 它必须与「上次签到结果」挨着才读得懂。
+    autoCheckinView
+      ? React.createElement('div', {
+          className: 'dim-jh-probeNotice',
+          'data-tone': autoCheckinView.tone,
+          role: 'status',
+          style: { flex: 'none', margin: '12px 24px 0' },
+        },
+        React.createElement('div', {
+          style: { display: 'flex', alignItems: 'center', gap: '12px' },
+        },
+        React.createElement('div', { style: { flex: '1' } }, autoCheckinView.text),
+        React.createElement('button', {
+          className: 'dim-jh-btn',
+          title: autoCheckinView.toggleTitle,
+          disabled: autoCheckinBusy,
+          onClick: () => void toggleAutoCheckin(),
+        }, autoCheckinBusy ? '提交中…' : autoCheckinView.toggleLabel)),
+        // 失败渠道与「暂无活动」逐条列出（只给计数的话用户与排查者都无从下手，
+        // 与「一键签到」那条提示的取舍一致）。复用既有列表样式，不引入新样式。
+        autoCheckinView.notes.length > 0
+          ? React.createElement('ul', { className: 'dim-jh-probeDetails' },
+              autoCheckinView.notes.map((note, index) =>
+                React.createElement('li', { key: index }, note)))
+          : null)
+      : null,
     // 签到结果放在页头下方横跨整宽：页头是 flex 且不换行，塞进去会挤压按钮。
     // `flex: none` 是必需的 —— `dim-jh-page` 是 column flex 且 `dim-jh-layout`
     // 带 `flex: 1`，不锁住的话提示条会被压扁（与 modal 内同款做法）。

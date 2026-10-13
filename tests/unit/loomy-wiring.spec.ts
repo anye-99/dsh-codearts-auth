@@ -47,7 +47,10 @@ describe('Loomy 在 index.ts 的接线', () => {
     // 候选必须先按「未停用」过滤（用户要求：策略建立在未停用基础上）
     expect(indexSource).toMatch(/listAccountsByProvider\(LOOMY\.id\)[\s\S]{0,300}?filter\(a => a\.enabled\)/)
     // 再按模型限流过滤（用户要求：策略建立在模型未受限基础上）
-    expect(indexSource).toMatch(/modelRateLimits\[key\]/)
+    // ⚠️ 走共享的 `rateLimitedUntil()`（同时认按模型 + 整账号两种标记），
+    // 不要退回内联 `modelRateLimits[key]`（会漏整账号标记，见 AGENTS.md）。
+    expect(indexSource).toMatch(/rateLimitedUntil\(a\.modelRateLimits, modelId \?\? ''\)/)
+    expect(indexSource).not.toMatch(/modelRateLimits\[key\]/)
   })
 
   /**
@@ -62,9 +65,9 @@ describe('Loomy 在 index.ts 的接线', () => {
     expect(adapterSource).toMatch(/resolveCredential: \(modelId\?: string\)/)
     expect(adapterSource).toContain('this.options.resolveCredential(options.model)')
 
-    // 宿主侧：接住 modelId 并用它过滤限流
+    // 宿主侧：接住 modelId 并用它过滤限流（判据见上一条用例的说明）
     expect(indexSource).toMatch(/resolveCredential: async \(modelId\?: string\)/)
-    expect(indexSource).toContain('const key = modelId ?? ')
+    expect(indexSource).toMatch(/rateLimitedUntil\(a\.modelRateLimits, modelId \?\? ''\)/)
   })
 
   it('settings namespace 已注册', () => {

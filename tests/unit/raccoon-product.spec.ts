@@ -55,7 +55,10 @@ describe('兜底模型表', () => {
     const byId = new Map(RACCOON.fallbackModels.map((m) => [m.id, m]))
     expect(byId.get('sn-glm-5-3')?.name).toBe('GLM-5-3 · x0.75')
     expect(byId.get('sn-kimi-k3')?.name).toBe('Kimi-K3 · x1')
-    expect(byId.get('sn-glm-5-3-flash')?.name).toBe('GLM-5-3-Flash · x0.2→x0.1')
+    // ⚠️ 2026-10-09：上游已移除该模型的折扣（billing_discounts 为空、status 回 normal），
+    // 生效价 = 原价 = 0.2，故不再显示 `→x0.1` 箭头。这是**数据**变化，不是解析缺陷 ——
+    // `raccoon.spec.ts` 里「有折扣时显示箭头」的纯函数用例仍然保留。
+    expect(byId.get('sn-glm-5-3-flash')?.name).toBe('GLM-5-3-Flash · x0.2')
     expect(byId.get('sn-deepseek-v4-1-flash')?.name).toBe('DeepSeek-V4.1-Flash · x0.25')
     expect(byId.get('sn-sensenova-6-8-flash')?.name).toBe('SenseNova-6.8-Flash · 免费')
     expect(byId.get('sn-sensenova-6-8-flash-lite')?.name).toBe('SenseNova-6.8-Flash-Lite · 免费')

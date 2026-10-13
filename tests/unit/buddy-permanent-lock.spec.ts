@@ -88,15 +88,21 @@ describe('index.ts 的接线', () => {
    * ⚠️ 候选必须**先**按 enabled + 模型限流过滤，余额分档只在候选内进行 ——
    * 与 Loomy 同一约定（用户要求「策略建立在模型没有受限且账户没有被停用的基础上」）。
    * 顺序反了就会出现「被限流的号因为积分多而被选中」。
+   *
+   * ⚠️ 限流判据必须走**共享的** `rateLimitedUntil()`，不要退回内联
+   * `modelRateLimits[key]`：共享函数同时认「按模型」与「整账号」（保留键 `'*'`）
+   * 两种标记，内联写法只认前者 —— 会让被整账号标记的账号重新进入候选
+   *（Qoder 日额度 code 110 实测按账号结算，见 AGENTS.md）。
    */
   it('候选过滤：provider id 取自产品配置、enabled、模型限流三项齐全', () => {
     const body = pickHelperBody()
     // provider 实参用 product.id 而非字面量（写死字面量在改名/多产品时会静默查不到账号）
     expect(body).toContain('listAccountsByProvider(options.product.id)')
     expect(body).toContain('filter(a => a.enabled)')
-    expect(body).toContain('const key = options.modelId ?? ')
-    expect(body).toContain('modelRateLimits[key]')
-    expect(body).toContain('Date.now() >= resetAt')
+    // 限流判据走共享实现（与 `getAvailableAccount` 同源），且透传 modelId
+    expect(body).toContain('rateLimitedUntil(a.modelRateLimits, options.modelId ?? \'\')')
+    // 防退回内联写法：内联只认按模型键，会漏掉整账号标记
+    expect(body).not.toContain('modelRateLimits[key]')
   })
 
   it('锁定状态按 provider 读，且判据是取反（permanentLocked=true ⇒ allowPermanent=false）', () => {

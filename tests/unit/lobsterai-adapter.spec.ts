@@ -281,11 +281,11 @@ describe('LobsteraiAdapter providerInfo', () => {
 })
 
 describe('LobsteraiAdapter 模型目录', () => {
-  it('无远端时用产品兜底目录（19 个）', async () => {
+  it('无远端时用产品兜底目录（30 个）', async () => {
     const { adapter } = makeAdapter(() => textSse('x'))
     const models = await adapter.listModels('lobsterai')
-    expect(models).toHaveLength(19)
-    expect(models[0]).toMatchObject({ provider: 'lobsterai', id: 'deepseek-v4-flash' })
+    expect(models).toHaveLength(30)
+    expect(models[0]).toMatchObject({ provider: 'lobsterai', id: 'deepseek-flash' })
   })
 
   it('inputModalities 恒为 text（图片未实测支持）', async () => {
@@ -398,14 +398,14 @@ describe('LobsteraiAdapter 模型目录', () => {
 
   it('远端返回空数组时回退兜底目录', async () => {
     const { adapter } = makeAdapter(() => textSse('x'), { fetchRemoteModels: async () => [] })
-    expect(await adapter.listModels('lobsterai')).toHaveLength(19)
+    expect(await adapter.listModels('lobsterai')).toHaveLength(30)
   })
 
   it('远端抛错时回退兜底目录', async () => {
     const { adapter } = makeAdapter(() => textSse('x'), {
       fetchRemoteModels: async () => { throw new Error('boom') },
     })
-    expect(await adapter.listModels('lobsterai')).toHaveLength(19)
+    expect(await adapter.listModels('lobsterai')).toHaveLength(30)
   })
 
   it('应用账号池的模型黑名单', async () => {
@@ -423,16 +423,18 @@ describe('LobsteraiAdapter resolveModel', () => {
   it('用兜底表给出上下文窗口', async () => {
     const { adapter } = makeAdapter(() => textSse('x'))
     const resolved = await adapter.resolveModel('lobsterai', 'glm-5.2')
-    expect(resolved.context).toEqual({ contextWindow: 131_072 })
+    // ⚠️ 2026-10-09 起兜底表改用**远端权威值**（glm-5.2 实测 1000000），
+    // 不再是旧的 131072 统一估值。
+    expect(resolved.context).toEqual({ contextWindow: 1_000_000 })
   })
 
   /**
-   * 远端 `contextWindow` 优先于兜底表估值。
+   * 远端 `contextWindow` 优先于兜底表。
    *
-   * 实测远端多数模型返回 1000000，而兜底表是 131072 的统一估值 ——
+   * 实测远端多数模型返回 1000000，而旧兜底表是 131072 的统一估值 ——
    * 用估值会让 DSH 过早触发上下文压缩，浪费 1M 窗口。
    */
-  it('远端 contextWindow 优先于兜底表估值', async () => {
+  it('远端 contextWindow 优先于兜底表', async () => {
     const { adapter } = makeAdapter(() => textSse('x'), {
       fetchRemoteModels: async () => [
         { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000 },
@@ -447,6 +449,13 @@ describe('LobsteraiAdapter resolveModel', () => {
       fetchRemoteModels: async () => [{ id: 'glm-5.2', name: 'GLM-5.2' }],
     })
     expect((await adapter.resolveModel('lobsterai', 'glm-5.2')).context)
+      .toEqual({ contextWindow: 1_000_000 })
+  })
+
+  it('兜底表里远端未下发窗口的条目仍用 131072 保守估值', async () => {
+    // 9 条远端不下发 contextWindow 的条目（如 glm-5）沿用桥接层估值。
+    const { adapter } = makeAdapter(() => textSse('x'))
+    expect((await adapter.resolveModel('lobsterai', 'glm-5')).context)
       .toEqual({ contextWindow: 131_072 })
   })
 

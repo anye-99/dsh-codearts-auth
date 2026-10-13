@@ -6,7 +6,7 @@ deepseek-harness 插件：执行 CodeArts（华为云）登录流程，默认走
 为显式回退（`flow: 'ticket'`）。插件还注册一个 `codearts` LLM provider 路由，使该
 凭证可直接用于 CodeArts 后端模型调用。
 
-此外插件内置另外十二个 provider 路由（完整清单见 [LLM provider](#llm-provider)）；
+此外插件内置另外十三个 provider 路由（完整清单见 [LLM provider](#llm-provider)）；
 其中带积分能力的几个：
 
 - **buddy（腾讯 CodeBuddy）** — 见 [buddy provider](#buddy-provider)；
@@ -27,6 +27,12 @@ deepseek-harness 插件：执行 CodeArts（华为云）登录流程，默认走
   **首个 Anthropic Messages 协议族**的 provider；
   支持积分余额与每日签到，**推理已启用**（Anthropic Messages，
   4 个模型实测通过；⚠️ 图片输入未实现）。
+- **teleagent（中国电信天翼 AI 星辰超级智能体）** — 见
+  [TeleAgent provider](#teleagent-provider星辰超级智能体中国电信天翼-ai)；
+  **唯一一个登录产物需要用户手动粘贴回调地址**的面板（它的回调 URL 是服务端常量、
+  且自定义协议插件注册不了，后端抓不到 token）；
+  **OpenAI 兼容且无加密**（推理直接复用 `openai-compat.ts`）；
+  **无续期端点**（失效只能重新登录）；**支持积分余额与每日签到**。
 - **antigravity（Google Antigravity / 官方 `agy` CLI）** — 见
   [Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)；
   **唯一一个不由本插件持有凭据的面板**（凭据归官方 `agy` 二进制、
@@ -37,7 +43,7 @@ deepseek-harness 插件：执行 CodeArts（华为云）登录流程，默认走
 （华为云「每日签到得积分」活动，走 `SDK-HMAC-SHA256` 签名）——
 见 [CodeArts 积分](#codearts-积分华为云每日签到得积分)。
 
-十三个 provider 面板（含 antigravity）都提供「**显示列表**」按钮，可逐个开关模型以控制其
+ 十四个 provider 面板（含 antigravity）都提供「**显示列表**」按钮，可逐个开关模型以控制其
 是否出现在对话框的模型选择里（黑名单制，默认全部显示）——
 见 [模型列表开关](#模型列表开关黑名单)。
 
@@ -142,11 +148,14 @@ dsh plugin --profile <name> install <path-to-this-repo>
 插件在 `ctx.llm` 上注册了一个 `codearts` provider 路由（OpenAI 兼容端点
 `https://snap-access.cn-north-4.myhuaweicloud.com/api/v2`）。每个模型请求都使用
 存储的 AK/SK/SecurityToken 按华为 `SDK-HMAC-SHA256` 方案签名，并附带
-`Chat-Id`/`Session-Id` 请求头。默认广告的模型为 GLM-5.2、GLM-5.1、
-GLM-5、GLM-5.3 Flash（`glm-5.3-flash`，1M 上下文）、盘古
-openpangu-2.0-flash (92B) / openpangu-2.0-pro (505B)，
-以及 DeepSeek V4 deepseek-v4-flash / deepseek-v4-pro（UI 标注每日 1000 万免费
-Tokens 福利）。
+`Chat-Id`/`Session-Id` 请求头。
+
+**模型列表以远端两个端点的合并结果为准**（`opengw gateway/config` 的
+`result.models` ∪ `snap-access /v1/model/builtin` 的 `builtinModels`）。
+2026-10-09 实测远端共下发 **7 条**：`deepseek-v4-flash` / `deepseek-v4-pro` /
+`deepseek-v4.1-flash`（每日 1000 万免费 Tokens 福利）、`GLM-5.2`、
+`glm-5.2-sft-harmony`（展示名 `GLM-5.2-ArkTS-SPARK`）、
+openpangu-2.0-flash (92B) / openpangu-2.0-pro (505B)。
 登录后在 dsh Models 页面选择该 provider 即可。
 
 > 注 1：CodeArts Agent IDE 模型列表显示的 flash ID 为 `deepseek-v4-flash-0731`
@@ -154,16 +163,35 @@ Tokens 福利）。
 > 用 `deepseek-v4-flash-0731` 调用会返回 `InferHub.002002009.404 The model is
 > not registered`，因此本插件只注册无后缀的 `deepseek-v4-flash`。
 >
-> 注 2：`glm-5.3-flash`（GLM-5.3 Flash，2026-08 加入，1M 上下文）是 benefit
-> （免费额度）模型：其 chat 请求必须携带 `maas_type: benefit` 请求头且该头
-> 参与 `SDK-HMAC-SHA256` 签名，否则后端返回 `InferHub.002002009.404 The model
-> is not registered`。适配器已自动处理，无需手动配置。
-> （逆向自 CodeArts Agent IDE mitmproxy 抓包，对齐 deveco-code-rust 90aeb17d。）
+> 注 2：**`maas_type: benefit` 的判据已改为自适应**（2026-10-09 第二次推翻）。
+> 早期结论是「benefit 模型必须带该头，否则 404 not registered」，该结论
+> **已失效**：实测当前服务端对**所有**模型带上该头都回
+> `InferHub.4004.200 benefit not found`，而**默认不带**时 GLM-5.2 /
+> deepseek-v4-flash / kimi-k2.6-vl 等全部可用。故适配器现在**默认不带**，
+> 只有当服务端以 `not registered` 明确拒绝时才带上重试一次，并把结果学习进缓存
+> —— 不再依赖任何静态或远端清单。详见 `src/models.ts` 的
+> `isCodeArtsBenefitModel`（含三套判据的历史与失效方式）。
+>
+> 注 3：`glm-5.3-flash` 已**退役**（服务端不再注册，带/不带该头都失败），
+> 故 `src/models.ts` 的 `RETIRED_MODEL_IDS` 会把它从远端目录里过滤掉。
+> `GLM-5.1` 与 `GLM-5` 在 `src/llm-adapter.ts` 的 `DEFAULT_MODELS` 里保留，
+> 但**远端两个端点都不下发它们** —— 它们只在远端拉取失败时出现在列表里；
+> 按「某次实测没看到 ≠ 不存在」的红线未删除（详见该常量注释）。
+>
+> 注 4：**视觉（VL）多模态模型不参与对话模型列表**（它们上下文小、不支持工具
+> 调用，只通过 `analyzeImage` 等工具间接调用）。⚠️ 该过滤**必须大小写不敏感**
+> —— **真实缺陷**（2026-10-09 实测）：原判据是
+> `id.includes('-VL-') || id.endsWith('-VL')`，而远端下发的 id 大小写并不统一：
+> `Qwen3-VL-235B` 是大写（会被过滤），而 **`kimi-k2.6-vl` 是全小写**，
+> 原判据**不命中**，于是它混进了模型选择器。
+> 远端自己对两者的标注**完全同类**（都是 `display_enabled: false` +
+> `model_category: "图片理解"`），可见「不该展示」是服务端的明确意图。
+> 复核脚本 `scripts/probe-codearts-vl.mjs`。
 
 凭据来自默认的新式 IAM OAuth 流程（含 `refresh_token`）。请求发起时会解析最新
 凭据，若已过期则先静默续期，再用新 AK/SK/SecurityToken 签名，无需重新打开浏览器。
 
-除 `codearts` 外，插件另注册十三个独立的 provider 路由：`buddy`（见
+除 `codearts` 外，插件另注册十四个独立的 provider 路由：`buddy`（见
 [buddy provider](#buddy-provider)）、`workbuddy`（见
 [WorkBuddy provider](#workbuddy-provider)）、`lobsterai`（见
 [LobsterAI provider](#lobsterai-provider有道龙虾)）、`qoder`（见
@@ -174,8 +202,9 @@ Tokens 福利）。
 [Loomy provider](#loomy-provider讯飞办公助手)）、`raccoon`（见
 [Raccoon Work provider](#raccoon-work-provider商汤小浣熊)）、`minimax`（见
 [MiniMax Code provider](#minimax-code-provider中国版)）、`zcode`（见
-[ZCode provider](#zcode-provider智谱-zai-免费额度)）、`antigravity`（见
-[Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)）。十三者互不覆盖，可同时使用。
+[ZCode provider](#zcode-provider智谱-zai-免费额度)）、`stepcode`（见
+[Step Code provider](#step-code-provider阶跃星辰-step-code)）、`antigravity`（见
+[Antigravity provider](#antigravity-providergoogle-agy-cli非凭据型)）。十四者互不覆盖，可同时使用。
 
 > **历史**：2026-10-01 曾接入 `vibex`（RunningHub 的 vibe-coding 平台）作为一个
 > **非 LLM 面板**（OAuth 账号 + Remote MCP 工具挂载，无补全端点）；2026-10-02
@@ -873,6 +902,64 @@ WorkBuddy 国际版后端没有签到接口，故其面板不显示。
 `pnpm test:e2e:workbuddy-claim`、`pnpm test:e2e:lobsterai-claim` 或
 `pnpm test:e2e:codearts-claim`，说明见 `tests/e2e/README.md`。
 
+### 每日自动签到（打开 DSH 时）
+
+上面那个按钮是**手动**入口。本插件另有**自动**入口：**每次打开 DSH 时**，
+自动对**全部支持签到的渠道**（10 个：CodeArts / CodeBuddy / LobsterAI /
+Qoder / Qoder 中国版 / TRAE / Loomy / MiniMax / TeleAgent / ZCode）
+依次执行一次签到，无需点任何按钮。
+
+实现：`src/auto-checkin.ts`（判据与执行器，纯函数）+
+`src/auto-checkin-store.ts`（状态文档）+ `src/auto-checkin-controller.ts`
+（装配层），宿主侧接线在 `src/index.ts`；面板状态条见
+`plugin-src/client/auto-checkin-panel.js`。
+
+**为什么是「打开 DSH 时」而不是每天固定钟点**：DSH 不是常驻服务。做成
+「每天 10:05 跑」的话，只有「恰好那一刻 DSH 开着」才会签到 —— 比「打开就签」
+**更不可靠**，却让人以为它准时。代价是必须自己记住今天签过没有，即下面的闸门。
+
+**闸门**（用户 2026-10-13 定，实现见 `decideAutoCheckin()`）：
+
+| 情形 | 行为 |
+|---|---|
+| 开关关闭 | 不执行 |
+| 当天（**UTC+8** 自然日）已成功签完 | 跳过，不重复发请求 |
+| 当天有失败 / 「暂无活动」 | **下次打开 DSH 再试**，当天最多 **3** 次 |
+| 跨到新的一天 | 计数归零，重新可签 |
+
+⚠️ **「暂无活动」算未完成**，这是刻意的：多数活动的刷新时刻是
+**每日 10:00（UTC+8）**（Qoder 的活动原文即「每日 10:00（UTC+8）刷新，领取后
+30 天有效」）。若你 09:30 打开 DSH，服务端此时回的就是「暂无活动」—— 把它算作
+「已完成」，你当天就再也签不到了，而那正是本功能要消灭的漏签。
+
+⚠️ **当天次数上限（3 次）防的是永久性失败**：凭据失效 / 账号被风控的渠道每次
+都失败，没有上限时你每开一次 DSH 就会对它们发一轮必然失败的请求。
+
+**面板**：Jet Hub 页头下方有一条常驻状态条，显示开关与**上次自动签到的
+时间、积分合计与逐项计数**（新领取 / 今日已领 / 暂无活动 / 失败），失败渠道与
+「暂无活动」渠道会逐条列出原因；右侧按钮可随时**开关**。
+
+几点约定：
+
+- **默认开启**：本功能的意义就是「装上即自动领」，故新装用户的默认值是开。
+  开关只在**下一次打开 DSH** 时生效（打开开关不会立刻补签一次 —— 想马上领请用
+  页头的「一键签到」）。
+- **开关只影响自动路径**：关掉它，页头的手动「一键签到」照常可用。
+- **先续期、后签到**：自动签到挂在启动时首轮凭据续期**之后**。启动瞬间池里可能
+  整批都是过期凭据，此时直接签会得到一片认证失败，而失败**会消耗当天的尝试
+  次数**，你就少了一次机会。
+- **逐渠道串行**：跨渠道并发会同时打出多路领取请求（含 ZCode 的 captcha），
+  触发风控的代价是当天领不到 —— 那正是本功能最不该造成的结果。
+- **重试是「整渠道重跑」**：当天有失败 / 暂无活动时，下次打开会把**全部 10 个
+  渠道**再跑一遍（含当次已成功的）。已领的渠道会多一次状态查询（服务端幂等，
+  回「已领」），代价是少量请求；换来的是「09:30 因活动未刷新而跳过的渠道」
+  能在下次打开时自动补上，无需判断「哪些渠道还没签」。
+- 状态存在 `$DSH_HOME/jet-hub/auto-checkin.json`（**独立文档**，与账号池的
+  `state.json` 分开）。原因与「锁定永久积分」那张表相同：`state.json` 是
+  **整体替换**语义，同机上另一条工作区里的旧版本代码会在每次写入时抹掉它不
+  认识的键 —— 那会让开关自己关掉、闸门失效。
+- 结果只记**计数与失败文案**，不含任何凭据内容（该文档会被直接翻看 / 随备份带走）。
+
 ### CodeArts 积分（华为云「每日签到得积分」）
 
 实现见 `src/codearts-credits.ts`。活动规则见
@@ -1035,15 +1122,23 @@ Bearer `access_token` 鉴权。
   故老账号在启动时由 `repairAccountNicknames` 自动补正，无需重新登录。
   非手机号形态的昵称**原样保留**（不误伤真实昵称）。
 - 模型列表：远端 `GET /api/models/available` 优先（它是权威来源），
-  失败时回退 `src/lobsterai-product.ts` 的 19 个内置模型。
+  失败时回退 `src/lobsterai-product.ts` 的 **30 个**内置模型。
+  > **2026-10-09 全表重采**：旧内置表是 19 条的编译期快照（抄自桥接层
+  > `staticModels`，标称 2026-08-06），实测远端已返回 **30 条** ——
+  > **12 条**旧表完全没有（`glm-5.3` 系、`qwen3.8` 系、`kimi-k3`、
+  > `deepseek-flash` 等），**1 条**已被上游撤下（`doubao-seed-2-1-pro-260628`
+  > → 换成 `-260915`）。兜底表过期会让**远端失败时用户少看到 12 个可用模型**。
+  > 同时把 `contextWindow` 从「全部 131072 的估值」改为**远端权威值**
+  > （30 条里 21 条下发，多数 `1000000`），仅远端未下发的 9 条沿用估值。
+  > 展示名也改用远端的 `modelName`（旧表 19 条里有 16 条的 name 就是裸 id）。
 - 续期：启动后每 30 分钟对可续期账号静默刷新（与其他 provider 同一调度器）。
   **终态判定比参考实现更精确**：只有 HTTP 401/403 或业务码 40100/40101
   才判为 `refresh_token` 失效；网络抖动走可重试路径，不会误让用户重新登录。
 
 > **已知待实测项**（见 `docs/lobsterai-integration-plan.md` §7.2）：
-> 是否支持 `reasoning_effort`、各模型真实上下文窗口（内置表统一填 131072，
-> 是桥接层的估计值）、图片输入、`prompt_cache_key`。这些在实现里都取了
+> 是否支持 `reasoning_effort`、图片输入、`prompt_cache_key`。这些在实现里都取了
 > **保守默认**（不声明 / 不发送），不会因未知而失败。
+> （各模型真实上下文窗口已于 2026-10-09 按远端校正，见上。）
 
 ## Qoder provider
 
@@ -1413,12 +1508,22 @@ LobsterAI 都不同源。它也是唯一一个**请求与响应都要转换**的
   前端**永久停在「认证中」**。这与「参数名写错」是两个独立根因、同一个症状。
 - 模型列表：走**批量**端点 `POST /api/ide/v1/batch_get_detail_param`（真实 CN IDE
   的用法），**一次拉取多个「通道」（`function`）各自一套模型目录**；失败时回退
-  `src/trae-product.ts` 的 32 个内置模型。
+  `src/trae-product.ts` 的 **52 个**内置模型（Go 端 32 条快照 + 2026-10-09 远端
+  实测新增 20 条；旧表缺失它们会让远端失败时用户少看到 20 个可用模型）。
+  ⚠️ `Doubao-Seed-*` 的窗口已按远端校正为 **256000**（旧表统一填 200000）。
 - ⚠️ **模型只在列出它的通道里可调用**。实测：`glm-5.1` 在 `solo_agent_remote`
   正常、在 `solo_work_lite` 回流内 `4001`；`glm-5-turbo` / `sagitta` 恰好相反。
   因此插件会**按每个模型所属通道分别下发 `function`** —— 旧实现把 `function`
   写死 `solo_work_lite`，agent 专有模型一用就报
   `trae: We're sorry, the param is invalid. (code=4001)`。
+- ⚠️ **已知未决问题：该端点的返回取决于请求的 `functions` 集合**
+  （2026-10-09 实测复现，同凭据各跑 2 次稳定）：生产口径（22 个 function）
+  与仅请求 3 个聊天通道的结果**不同** —— 后者才含 `solo_agent_remote` 的条目；
+  前者会把 `minimax-m3` / `mimo-v2.6-*` / `qwen-3.7-plus` 归到 `solo_work_lite`，
+  并把 `glm-5.1` 归到 `chat`（与上面那条实测判据冲突）。
+  **「发到 `chat` 是否能通」尚未实测**，故本次**未改** functions 列表 ——
+  改动必须配一次真实推理验证。复核脚本 `scripts/probe-trae-channels.mjs`
+  会打印两口径的通道归属差异。
 - ⚠️ **两种「不可用」要分开看**：
   - `display_config.is_custom_model === true`（需在 IDE 内自行绑定供应商）
     → **必然 4001，插件剔除**。实测 2026-09-19 该账号有 5 个，但**该名单已过期**
@@ -1494,21 +1599,42 @@ Jet Hub 的 Cline 面板点「+ 新建账号」→ 浏览器打开授权页并�
 ### 免费模型
 
 Cline 的免费模型由远端 `GET /api/v1/ai/cline/recommended-models` 的 **`free`
-数组**动态下发，插件在模型列表里把它们的名字标成 `· 免费`，例如：
+数组**动态下发，插件在模型列表里把它们的名字标成 `· 免费`。**当前下发的 4 个**
+（2026-10-09 实测）：
 
 ```
-Space Bunny Alpha · 免费
 MiMo-V2.6-Flash · 免费
-DeepSeek V4.1 Flash · 免费
-Gemini 3.8 Flash · 免费
 Muse Spark 1.3 Contributor · 免费
+Step 5 Preview · 免费
+Solar Mini 4 · 免费
 ```
+
+> **2026-10-09 免费集合换了三个成员**（匿名与已登录两种认证态下**完全一致**）：
+> 新增 `cline-free/step-5-preview`、`cline-free/solar-mini4`；
+> 移除 `stealth/space-bunny-alpha`、`cline-free/deepseek-v4.1-flash`、
+> `cline-free/gemini-3.8-flash`。
+>
+> ⚠️ **移除是实测结论，不是「没在清单里就删」**：这三个 id 既不在 `free` 数组、
+> 也不在 `/api/v1/models` 的 469 条里，但那只能说明「未被列出」。故逐个发了
+> 一次最小请求（`max_tokens: 1`）验证 —— 两个回
+> `404 {"error":"model not found"}`，`stealth/space-bunny-alpha` 回 `500`
+> 且其上游 OpenRouter 报文是 `No endpoints found for stealth/space-bunny-alpha`
+> （**上游已无该模型的任何端点**）。对照组 `cline-free/mimo-v2.6-flash` 同参数回
+> `500 empty response content`（模型存在，只是 `max_tokens: 1` 产不出内容），
+> 证明该判据能区分两者。复核脚本 `scripts/probe-cline-availability.mjs`。
+>
+> ⚠️ **保留它们会有实际危害**：`isClineFreeModel` 有 `cline-free/` 前缀的命名
+> 约定兜底，故即使远端不再下发，这些 id 仍会被播报为「免费」并出现在选择器里
+> —— 用户选中后必然 404。
+>
+> ⚠️ **`cline-free/deepseek-v4.1-flash` 已下线**，它原是 `cline-chat-probe` 的
+> 默认被测模型（那会让探针必然失败），现已换成 `cline-free/mimo-v2.6-flash`。
 
 ⚠️ **免费与付费是两组不同的模型 id**，不是同一模型的两种档位：
 
 | 免费（`free` 数组下发） | 按量计费（同名前缀不同） |
 |---|---|
-| `cline-free/deepseek-v4.1-flash` | `deepseek/deepseek-v4.1-flash` |
+| `cline-free/mimo-v2.6-flash` | `xiaomi/mimo-v2.6-flash` |
 
 插件的判定基于**完整 id**（远端 `free` 集合 ∪ `:free` 后缀 ∪ `cline-free/`
 前缀 ∪ 静态兜底），**不做名字模糊匹配** —— 否则会把付费条目误标为免费，
@@ -1537,8 +1663,9 @@ Muse Spark 1.3 Contributor · 免费
 
 ### Gemini 系模型的两个 400（已修）
 
-`cline-free/gemini-3.8-flash` 曾「发消息即失败」。错误体里一次请求有**两个
-provider 尝试、两个不同的错误**，是两个独立根因：
+`cline-free/gemini-3.8-flash` 曾「发消息即失败」（⚠️ 该模型已于 2026-10-09 实测
+**下线**，此处保留作为历史教训）。错误体里一次请求有**两个 provider 尝试、
+两个不同的错误**，是两个独立根因：
 
 | provider | 错误 | 根因 |
 |---|---|---|
@@ -1681,7 +1808,8 @@ pnpm test:e2e:cline-chat   # ⚠️ 发一次推理：默认只发 cline-free/de
 
 ### 模型与倍率
 
-远端 `GET /api/v1/models` 返回 11 条，按 `type === 'chat'` 过滤得 **8 条**。
+远端 `GET /api/v1/models` 返回 13 条，按 `type === 'chat'` 过滤得 **10 条**
+（2026-10-09 重采；其中 `auto` 是聚合入口，兜底表**不收录**，故兜底表为 **9 条**）。
 ⚠️ 过滤判据必须是 `type`，**不能**看 `input_modalities` —— 实测 5 个 chat
 模型的输入模态含 `image`（能看图），那不是生图模型。
 
@@ -1691,14 +1819,24 @@ pnpm test:e2e:cline-chat   # ⚠️ 发一次推理：默认只发 cline-free/de
 
 | 模型 | 倍率 | 上下文 |
 |---|---|---|
+| `DeepSeek-V4.1-Flash` | x2.0 | 1048576 |
 | `deepseek-v4-flash-0731` | x3.0 | 1048576 |
 | `MiniMax-M3` | x4.0 | 1048576 |
 | `Kimi-k2.6` | x6.5 | 262144 |
 | `qwen-3.8-max` | x12.0 | 1000000 |
 | `GLM-5.3-Flash` | x0.8 | 1048576 |
 | `qwen3.8-flash` | x0.8 | 1000000 |
-| `spark-x` | x0.1 | 1048576 |
+| `spark-x` | **（无倍率，见下）** | 1048576 |
 | `mimo-v2.5` | x3.3 | 1048576 |
+
+> **2026-10-09 更新**：新增 `DeepSeek-V4.1-Flash`（远端 index 0 且
+> `is_default_model: true`，旧表完全没有它）；**0 条下线**。
+
+⚠️ **`spark-x` 的倍率位已被上游改写成状态文案**：远端 `name` 现为
+`Spark X2.5（限时免费）`，不再下发 `x0.1`。兜底表与远端保持一致。
+**这是上游事实，不是我们丢了倍率** —— 「倍率必须显示」这条口径在此处
+无法由我们满足。⚠️ 该值是**易腐的**：限免结束上游会改回 `（x0.1）`，
+届时需重采。
 
 ⚠️ **`spark-x` 的上下文有已知分歧**：远端声明 `1048576`，而 Loomy 客户端用
 本地表 `MODEL_CONTEXT_OVERRIDES = { 'spark-x': 262144 }` 强制降到 262144。
@@ -1771,8 +1909,8 @@ loomy: { balance: true, dailyCheckin: true, onboardingTasks: true }
 | `xhigh` | 极高 |
 
 **档位列表直接取自远端** `GET /models` 的 `reasoning_efforts`
-（8 个 chat 模型实测完全一致），故服务端调整档位**无需改代码**。
-远端整体不可用时回退兜底表的实测值。
+（9 个带档位的 chat 模型实测完全一致；`auto` 未下发档位），故服务端调整档位
+**无需改代码**。远端整体不可用时回退兜底表的实测值。
 
 ⚠️ **默认档是本插件自己的「高」，不是远端声明的 `low`**（用户要求）：
 远端 `default_reasoning_effort` 声明的是 `low`，而 DSH 的「用户没选时发哪个档」
@@ -1841,8 +1979,17 @@ pnpm test:e2e:loomy-chat   # ⚠️ 发一次推理：默认 qwen3.8-flash（x0.
 | `sn-sensenova-6-8-flash-lite` | 0.5 | **0** | `SenseNova-6.8-Flash-Lite · 免费` |
 | `sn-glm-5-3` | 0.75 | 0.75 | `GLM-5-3 · x0.75` |
 | `sn-kimi-k3` | 1 | 1 | `Kimi-K3 · x1` |
-| `sn-glm-5-3-flash` | 0.2 | **0.1** | `GLM-5-3-Flash · x0.2→x0.1` |
+| `sn-glm-5-3-flash` | 0.2 | **0.2** | `GLM-5-3-Flash · x0.2` |
 | `sn-deepseek-v4-1-flash` | 0.25 | 0.25 | `DeepSeek-V4.1-Flash · x0.25` |
+
+> ⚠️ **`sn-glm-5-3-flash` 的折后价已消失**（2026-10-09 实测）：旧展示为
+> `x0.2→x0.1`，现为 `x0.2`。**判定为「上游不再下发」而非「解析写错」**：
+> ① 两个字段都下发了且均为 `0.2`；② 同一段解析对 `sn-sensenova-*` 仍正确判出
+> 「免费」；③ 上游的折扣明细 `billing_discounts` 已为**空数组**、`billing_status`
+> 回到 `normal`（折扣被整体移除，不是「存在但不在时段内」，故无从推算）；
+> ④ 5 次采样计费快照只有 1 种，非抖动。
+> ⇒ 修的是**数据**，不是逻辑；`tests/unit/raccoon.spec.ts` 里「有折扣时显示箭头」
+> 的纯函数用例**仍然保留**（将来真出现折扣时才有防线）。
 
 另有 3 个 `visible:false` 的 `raccoon-*` 内部模型（自动选模的候选池），
 **不在模型选择器中暴露**。
@@ -2113,6 +2260,228 @@ pnpm test:e2e:minimax-chat   # ⚠️ 发推理（真实适配器；默认测 M2
 
 ---
 
+## TeleAgent provider（星辰超级智能体，中国电信天翼 AI）
+
+第十三个 provider，id `teleagent`，面板显示为 **TeleAgent (电信)**。
+
+它把**中国电信天翼 AI「星辰超级智能体」桌面版**接进 DSH。产品与 WorkBuddy /
+QoderWork / Trae Work 同赛道（Electron 桌面端、AI 办公智能体）。
+
+⚠️ **本章只写「怎么用」与「为什么长这样」；所有协议事实的 asar 原文与复核方法**
+**在 `docs/teleagent-protocol-notes.md`** —— 改代码前必读那份，不要凭本章动手。
+
+### 协议族：OpenAI 兼容，且**无加密**
+
+| 项 | 值 |
+|---|---|
+| 推理 | `POST https://agent.teleai.com.cn/superCowork/sapi/api/v1/chat/completions` |
+| 请求体 | 标准 OpenAI `chat/completions`（`messages` / `tools` / `stream:true`） |
+| 响应 | 标准 SSE ⇒ **直接复用 `src/openai-compat.ts`** 的 `serializeMessages` + `consumeOpenAiSse` |
+| 用户信息 | `GET {base}/cowork/user_info`（信封：`code===0` 或 `200` 或 `success` ⇒ 取 `data`） |
+
+⇒ 这是**协议层最薄**的一个 provider（没有 WASM 签名、没有 SOLO 转换、没有信封剥离），
+也是**唯一没有 `*-messages.ts` 文件**的推理 provider。
+
+### ⚠️ 两个凭据在两个不同的头上（最容易踩）
+
+```
+Authorization: Bearer <内置渠道 apiKey>       ← asar 硬编码，随插件分发
+X-Token: <用户登录拿到的 token>               ← 用户身份（决定谁的额度、谁的账号）
+```
+
+外加 `X-SuperAgent-Timestamp`（**秒级**）/ `X-SuperAgent-Nonce`（每请求重算）/
+`X-SuperAgent-Device-Id` / `X-Route-Target: ops-gateway`。
+
+⚠️ **把用户 token 塞进 `Authorization` 会 401** —— 网关按 Bearer 分支校验渠道 key 形状。
+⚠️ **时间戳写成毫秒会被判越界。**
+⚠️ 推理端点**不需要**签名（Go 二进制里有 `X-SuperAgent-Signature` 字符串，
+但 `j8t()` —— 即用于 chat/completions 的那组头 —— 不含它，那属其它通道）。
+
+### ⚠️ 登录：唯一需要**用户粘贴回调地址**的面板
+
+官方桌面端靠**自带 BrowserWindow 监听导航**抓 token，而：
+
+- 回调地址是**服务端常量**（`LOGIN_PAGE` 写死），**没有** `redirect_uri` 可配
+  ⇒ 插件起本地监听没用（服务端不会往 127.0.0.1 回跳）；
+- 自定义协议 `teleai-cowork://` 需要**系统协议注册** ⇒ 插件也接不到。
+
+所以面板流程是：
+
+1. 点「+ 新建账号」→ 浏览器打开**天翼 UPMS 授权页**（面板用的就是它，
+   见 `TELEAGENT.loginPage`）。
+   ⚠️ **不是** `https://agent.teleai.com.cn/meter/teleagent-login/login` ——
+   实测那是个 **511 字节的空 SPA 壳**，直接打开**白屏**（它需要 `?tokenCode=`
+   之类的内部参数才渲染，是官方客户端 iframe 专用的地址）；
+2. 用天翼账号完成登录；
+3. ⚠️ **地址栏和 Console 里都没有 token** —— 实测授权完成后地址栏落在
+   `…/superCowork/sapi/cowork/auth?code=ucc.XXXXXX`，**只有 `code`**；
+   token 装在唤起桌面端的那条 `teleai-cowork://auth?token=…` deeplink 里，
+   被官方客户端**拦截导航**取走。而它**也不在 Console 里**（浏览器不打印跨协议
+   导航；桌面端日志只记 `route: 'auth'`、**不记 URL**），
+   **也不能把 code 交给我们换**（code 一次性，消费后再打返回与假 code
+   逐字节相同的 `get token error`）。
+   ⇒ 唯一可操作的取法：**F12 → Network → 勾选「保留日志」→ 重新完成一次授权**，
+   然后点开那条 `cowork/auth?code=…` 请求，在它的 **`Location` 响应头**
+   或**响应体**里找到 `token=`；
+4. 回到面板粘贴那串 token（含 token 的整条链接也可以）→ 点「完成登录」。
+
+输入框同时接受三种形态：**deeplink URL**、**回调 URL**（早期形态）、**裸 token**。
+粘贴时会自动 trim（复制必带尾部换行，不 trim 会把有效 token 判成「无法识别」）。
+
+⚠️ 若粘贴框是**重开设置页后自动恢复**出来的（面板会从「条目在、凭据不在」的账号
+恢复入口），当初的登录窗口往往早已关闭 —— 框里会直接给出**可点的登录页链接**，
+不必重建账号，重新走一次授权即可。
+
+⚠️ **`code` 没有对我们开放的交换端点** —— 全文检索无「用 code 换 token」的实现，
+`token` 就是最终凭据（`completeLogin(a.token)` → 直接 `setToken` → `fetchUser`）。
+**不要**凭空发明一个交换端点。
+（服务端在那一步**确实**做 code→token：假 code 打 `/cowork/auth` 回
+`400 {"error":"get token error"}` —— 但这**不等于**存在一个我们可以调用的端点。）
+
+✅ **2026-10-08 补一条直接证据**（封掉「那我们用用户的 code 去换好了」这个想法）：
+拿用户浏览器**已消费过**的真 code 再打一次 `/cowork/auth`，
+返回与**随机假 code 逐字节相同**的 `400 {"error":"get token error"}`
+（两者响应体都是那 27 字节，只差 `X-Request-Id` 之类的追踪头）。
+⇒ code 是一次性的，且该端点对无效/已废 code **一视同仁**，
+不存在「把 code 交给插件、插件换 token」这条自动化路。
+
+⚠️ **提交失败不删占位条目**（用户多半只是粘得不完整，要能重试），
+但前端**仍会刷新账号列表**：条目可能已被 `startLogin` 的 **10 分钟**超时清掉，
+而粘贴框只由内存 state 控制 —— 不刷新就会让框永久挂在一条不存在的账号上，
+表现为「点了没反应」。前端提交成功后**主动收敛**，
+不等 `login.poll`（那条轮询 300 秒就停了，比后端窗口短）。
+
+### ⚠️ 无续期端点 ⇒ 失效只能重新登录
+
+asar 全文检索 `refresh_token` / `ExchangeToken` / token 刷新 ⇒ **0 命中**。故：
+
+- `isTeleagentRefreshable()` 恒 `false`；账号池占位条目也写 `refreshable: false`
+  （写成 true 会让定时器每 30 分钟对一个不可能成功的操作发一轮请求）；
+- `refresh()` 退化为「探测有效性」（调 `user_info`），失败抛
+  `RefreshTokenExpiredError`（**name 必须精确**，`src/refresh.ts` 按 name 判终态）；
+- token **没有可解析的过期时间**（不是 JWT、回调不带 `expires_in`）
+  ⇒ 有效期显示「未知」，且**保守判未过期**（判成已过期会让每次发消息都先触发一次无效续期）。
+
+### 模型表（3 条，取自 asar 种子 `KG` + Go 引擎示例会话）
+
+| id | 展示名 | 上下文 | 输出上限 | 图片 |
+|---|---|---|---|---|
+| `chat-nano` | 轻速 | 100K | 16384 | ✗ |
+| `chat-lite` | 轻量 | 100K | 16384 | ✗ |
+| `chat-pro` | 专业 | 100K | 16384 | ✗ |
+
+⚠️ **思考档位当前不声明** —— 种子表没有 `thinking_config` / `effort_options`，
+档位/前沿模型的参数在**服务端下发的目录缓存**里，而那个拉取端点**尚未定位到**
+（见 `docs/teleagent-protocol-notes.md` 未决项 1、2）。
+⇒ `fetchModels()` **只返回兜底表、不发网络请求**（不凭猜测发一个可能 404 的请求），
+`resolveModel` **不产出** `reasoning`（UI 显示「当前模型未提供推理等级」）。
+**不要**按截图或直觉给它们编档位 —— 与 Qoder「没有档位就是没有」同一条教训。
+
+⚠️ **`supportsImage` 恒 false 是「未实测」的保守取值，不是「实测不支持」**。
+故收到图片会**报 `UNSUPPORTED_CONTENT`** 而不是静默丢图（静默会让用户以为模型看到了图）。
+
+### 积分 / 签到：**都有**（能力矩阵登记 true）
+
+> ⚠️ **本节曾写着「不提供按钮」，那是错的** —— 由用户 2026-10-07 的客户端截图
+> （积分余额 **6100.00** / 每日可领 **100** / 已领 **2** 天 / 累计 **200** / 今日已领）
+> 推翻。修正过程与教训见 [docs/teleagent-protocol-notes.md](<docs/teleagent-protocol-notes.md>) §10。
+
+| 能力 | 端点 | 关键字段 |
+|---|---|---|
+| **积分余额** | `GET /user/portal/companyStore/userCenter` | `current_points_balance` |
+| **签到面板** | `GET /user/portal/companyStore/v2/checkDayTask` | `daily_task.{daily_claimable_points, total_claim_days, total_claimed_points, claimed_today}` |
+| **每日领取** | **`GET`** `/user/portal/companyStore/checkTask?type=daily_login` | （不解析响应，领取后重查面板） |
+
+⚠️ **领取是 GET，不是 POST**（asar 原文 `Rn(...)` 即 `bM("GET", …)`）。
+⚠️ **领取响应不被解析**：客户端只 `await` 它、随后**重查面板**刷新 UI ⇒ 形状未知。
+本插件同样**不解析**它，而是领取后重查 `checkDayTask` 拿权威状态 ——
+这样无论响应什么形状都能正确判定（见 `src/teleagent-credits.ts`）。
+⚠️ **「今天已领」只能靠 `claimed_today` 判**：领取端点**不返回**显式幂等码
+（不像 MiniMax 的 `claim_result`）⇒ RPC 的 `claimAll` 分支**必须开启状态预检**
+（与 TRAE「claim 幂等且无法与真领取区分」那条教训同因）。
+⚠️ **余额取不到字段时返回 `null`（查询失败）而不是 `0`** ——
+报 0 会让用户以为积分被清零。
+⚠️ **`streakDays` 恒 0**：面板只给「**累计**天数」，拿它冒充「**连续**天数」是编造语义；
+累计值放在 `totalCredits`（DSH 该字段的语义正是「累计已领积分」）。
+
+**这段是踩坑记录，值得一读**：初版登记 `false` 的原因是我在 asar 里按
+`/api/`、`credit`、`point`、`signin`、`checkin` 等**英文关键词**搜索，
+而这两个端点的路径是 `user/portal/companyStore/…`（**不含其中任何一个词**）、
+字段名又全是 `daily_claimable_points` 这种**业务自定义**命名
+⇒ **关键词搜索对「业务域词汇」必然漏检**，且漏检后得到的否定结论看起来还很确定。
+✅ 正确姿势：**先搜界面文案的 i18n key**（如 `settings.benefit.pointBalance`），
+再顺藤读它消费的字段名与产出该字段的 `Rn(ot.XXX)` 调用 —— 全程用**实证的名字**。
+
+### 设备标识是**设备级**
+
+`X-SuperAgent-Device-Id` 存在独立的 `TELEAGENT_DEVICE_ID` ref 上、全设备共用一份
+（asar 明示 deviceId 与 installId 一起持久化于设备级状态文件）。
+⚠️ **不要**给每个账号各造一个 —— 那会让服务端看到「同一台机器突然冒出 N 台设备」。
+读写失败时**降级为不下发该头**（它是身份头、非登录必需项，不该因此让登录失败）。
+
+### ⚠️ 推理端点**需要签名**（业务端点不需要）
+
+⚠️⚠️ **这是本 provider 最容易踩的坑**（2026-10-07 实测发现）：
+
+| 请求 | 响应 |
+|---|---|
+| `chat/completions` 只带 `X-Token` | **403** `40301`「检测到客户端版本过低…」 |
+| 同上 + 带 `X-App-Version` | **401** `40104 unsupported sign version` |
+| `user_info` / 余额 / 签到只带 `X-Token` | **200**（业务端点确实不需要签名） |
+
+⚠️ **`40301` 的文案会把人带偏**：它说「客户端版本过低」，但**与版本号无关** ——
+实测 `X-App-Version` 从 `2.5.3` 扫到 `3.0.0`，错误**一模一样**。真正缺的是**签名头**。
+**判据：见到 `40301`/`40104` 就去查签名，不要先去改版本号。**
+
+**两套头都要发，且时间戳单位不同**：
+
+| 组 | 头名 | 来源 | 时间戳 |
+|---|---|---|---|
+| `X-SA-*` | `Sign-Version` / `Timestamp` / `Nonce` / `Signature` | asar renderer | **毫秒** |
+| `X-SuperAgent-*` | `Sign-Version` / `Timestamp` / `Nonce` / `Signature` / `Device-Id` / `Install-Id` | **Go 二进制** | **秒** |
+
+签名算法（asar `LocalAuthService.signRequest` 原文）：
+```
+msg = ["local-v1", METHOD, pathWithQuery, msTimestamp, nonce].join("\n")
+sig = HMAC-SHA256(sessionKey, msg).digest("base64url")
+```
+⚠️ **`sessionKey` 是本地随机生成的**（`randomBytes(32)`、每进程新建、
+**不经服务端注册**）⇒ 服务端只能校验「头存在 + 版本合法 + 时间戳新鲜」，
+故本插件**自己生成**一个并持久化（`TELEAGENT_SIGN_KEY_REF`，与 deviceId 同策略）。
+⚠️ **`X-SuperAgent-Signature` / `Sign-Version` 只存在于 Go 二进制里**，
+**不在** renderer 代码里 ⇒ **只读 renderer 必然漏掉它们**（症状是 `40101`）。
+⚠️ 端到端验证脚本：`scripts/probe-teleagent-infer-sign.mjs`。
+
+⚠️ 另两处已修正的认知：**`deviceId` 是 12 位 hex**（不是 32 位，实测
+`app-auth/device-meta.json`）；**token 是标准 JWT、`exp` 可解**（实测约 30 天，
+`teleagentCredentialExpiresAtMs` 现已优先 `expires_at`、回退解 JWT）。
+
+### 错误归类
+
+| 情况 | 归类 | 说明 |
+|---|---|---|
+| HTTP 402 | `QUOTA_EXCEEDED` | 「积分余额不足」是唯一有明确行动指引的失败，必须原样透出 |
+| 401 / 403 | `AUTH` | 走 `httpErrorCode`；本 provider 无续期，故一次失败即终态 |
+| 429 | `RATE_LIMIT` | 同上 |
+| 5xx / SSE 错误帧 | 由 `consumeOpenAiSse` 统一归类并**抛错** | ⚠️ 绝不静默返回空流（Qoder 早期同型缺陷：UI 表现为「干净地停止、无任何报错」） |
+
+### 相关文件
+
+| 文件 | 职责 |
+|---|---|
+| `src/teleagent-product.ts` | 产品配置单一真相源（host / 路径常量 / 兜底模型表 / apiKey） |
+| `src/teleagent.ts` | 凭据形状、**身份头**、**回调解析**、模型归一 |
+| `src/teleagent-auth.ts` | `TeleagentAuth`：`startLogin` / `submitLogin` / `user_info` / 探测式 refresh |
+| `src/teleagent-adapter.ts` | `TeleagentAdapter`（复用 `openai-compat.ts`）+ `registerTeleagentLlm` |
+| `docs/teleagent-protocol-notes.md` | **取证记录**（asar 原文、复核方法、未决项、实测清单） |
+| `tests/unit/teleagent*.spec.ts` | 62 条（协议层 33 + 适配器 17 + 接线断言 12） |
+
+⚠️ 接线类失效模式（漏接 / 串接 / 位置参数错位）由 `teleagent-rpc.spec.ts` 的
+**源码断言**锁死，并已做**反向验证**（8 条错误形态逐一把源码改回去，8 条全部变红）。
+
+
+---
+
 ## ZCode provider（智谱 z.ai 免费额度）
 
 第十个 provider，id `zcode`，面板显示为 **ZCode (智谱)**。
@@ -2330,6 +2699,84 @@ ZCode 免费通道**只认 Anthropic Messages**（实测 `zcode-plan` 下的
 ⚠️ 两个最容易踩的：`tool_use.input` 是**对象**（不是 JSON 字符串）；
 工具结果必须包成 `role:'user'` 里的 `tool_result` 块。
 
+## Step Code provider（阶跃星辰 Step Code）
+
+`stepcode` 是第 15 个面板、第 14 个 LLM 路由（除 `codearts` 外），对接
+**阶跃星辰（StepFun）官方终端 Agent CLI —— [Step Code](https://github.com/stepfun-ai/Step-Code)**
+的**国内 Step Plan 订阅**通道。
+
+### 它是什么
+
+Step Code 是阶跃的终端 AI Agent（`step` 命令，发行包与官方文档见
+`https://platform.stepfun.com/docs/zh/step-code/overview`）。本插件让您
+**在 DSH 里直接用 Step Plan 订阅额度**，无需安装官方 CLI。
+
+### 登录：浏览器授权 + 本地轮询（全自动）
+
+在 Jet Hub 的 **Step Code** 面板点「+ 新建账号」，插件会：
+
+1. `POST https://platform.stepfun.com/api/stdhttp/v1/cli-login/init`
+   申请一个 `flow_id`；
+2. 弹出浏览器打开 `https://platform.stepfun.com/cli-login-remote?flow_id=…`；
+3. 您在浏览器里登录阶跃账号并点「同意」；
+4. 插件轮询 `GET …/cli-login/poll/{flow_id}`，拿到 `credential.api_key` 并落盘。
+
+⚠️ **不需要装官方 CLI，也不需要手工复制任何东西** —— 这是本插件里
+**唯一一个「全自动且不起本地端口」**的登录（不像 TeleAgent 要粘贴回调 URL，
+也不像 Raccoon / Loomy 要起本地登录页）。
+
+⚠️ 登录时必须选**国内 Step Plan** 通道：`platform.stepfun.com` 与
+`platform.stepfun.ai`（海外）是**两套独立的订阅**，选错通道不会因为已有订阅
+而自动改用订阅额度。
+
+### 凭据与额度
+
+登录换来的是一把**静态 API Key**（长期有效，官方给它的
+`expires = Number.MAX_SAFE_INTEGER`）。**没有续期端点** —— 官方
+`refreshStepOAuth()` 的全部实现就是「校验一个哨兵字符串后原样返回」，
+不发任何请求。因此：
+
+- 账号卡片「刷新」做的是**有效性探测**（`GET /v1/models`，
+  与官方 `step login status` 同判据），而不是续期；
+- 失效时只能**重新登录**；
+- 一次网络抖动**不会**把账号误标为「需重新登录」（探测是三态的，
+  只有明确的 401/403 才判失效）。
+
+⚠️ **首版不提供余额 / 签到显示**（能力矩阵如实登记 `{balance:false,
+dailyCheckin:false}`）—— 这是「**未探明**」而非「实测没有」：官方 CLI 的
+登录 API 只有 `/init` 与 `/poll/{id}` 两个端点，且其自带的 `/status`
+在官方文档里被明确标注为 **"not yet ported"**（官方 CLI 自己都还没有额度面板）。
+若您能提供 Step Plan 用量页面的截图或抓包，可以据此补上。
+
+### 模型与思考档位
+
+模型目录**完全来自远端** `GET https://api.stepfun.com/step_plan/v1/models`
+（官方 CLI 的本地种子表就是空的），并且是**账号级**的 ——
+可用模型取决于您的订阅等级（Mini / Plus / Pro / Max）。
+
+**思考档位**由远端逐模型的 `reasoning_effort_support_list` 决定，
+展示名用中文（`最小/低/中/高/极高/最大`）。⚠️ 插件**不设默认档位**，
+默认跟随上游 —— 这是有意的：思考 token 计入输出、与正文共享额度，
+硬编一个高档位会白白顶格消耗。
+
+图片输入按远端逐模型的 `enable_vision_input` 判定；模型不支持时会**明确报错**
+而不是静默丢弃图片。
+
+### 协议要点（维护者视角）
+
+推理走 **OpenAI 兼容**端点
+`POST https://api.stepfun.com/step_plan/v1/chat/completions`，
+请求头只有一个 `Authorization: Bearer <api_key>`
+（**无签名、无渠道密钥、无归属头** —— 是本插件里最薄的一条链路），
+故直接复用 `src/openai-compat.ts`，没有 messages 层。
+
+⚠️ 取证来源：官方发行包 `step-0.1.3-windows-x64.zip`（SHA256 已校验）内
+`step.exe` 的**未混淆** JS bundle，逐字摘录；并与 StepFun 官方的
+[DeepSeek Harness 集成文档](https://platform.stepfun.com/docs/zh/guides/developer/integrations/deepseek-harness)
+交叉印证。⚠️ 同包内的 `docs/step-integration.md` 仍写着 `anthropic-messages`，
+那是**过时文档**（它点名的修复模块在 0.1.3 里已不存在）——
+详细裁决见 AGENTS.md 的「Step Code provider」章节。
+
 ## Antigravity provider（Google `agy` CLI·非凭据型）
 
 `antigravity` 是第 14 个面板、第 12 个 LLM 路由（除 `codearts` 外），也是
@@ -2368,6 +2815,17 @@ Linux Keyring 里，由官方二进制自管 —— 本插件**从不读写这�
 
 - **休眠 ≠ 未登录**：`agy` 二进制缺失或版本过旧时顶栏显示「休眠：…」，
   不显示成「未登录」（那会诱导用户点一个必然失败的登录）。
+- ⚠️ **模型目录是「服务端按账号资格过滤后」的结果，不是客户端能力清单**
+  （2026-10-09 实测，agy `1.3.2`）：`agy models` 实测返回 14 条原始条目 →
+  折叠后 **7 条**（`gemini-3.8/3.7/3.6-flash` + `gemini-3.1-pro` +
+  `claude-sonnet-4-6` / `claude-opus-4-6-thinking` / `gpt-oss-120b-medium`）。
+  ⚠️ **拉取前它会先向 Google 做一次资格校验**
+  （失败时 stderr 原文 `Error: Eligibility check failed: Post
+  "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"`），
+  校验不过就**一条都不返回** ⇒ 网络受限或账号无资格时，目录会落回内置兜底表。
+  因此**别把「某次没看到某个模型」当成「该模型已下线」**：
+  兜底表里的 `gemini-3.5-flash` 本次未下发，但 1.3.2 二进制仍完整枚举它
+  （`-low` / `-lite` / `-extra-low` 共 4 处），故**保留**（见 `src/agy/types.ts` 注释）。
 - **主账号 vs 副账号**：主账号卡片打「系统 HOME / 主账号」标，
   「开终端」「删除」对它禁用（它是真实 HOME 登录态的唯一槽位，
   退出登录的正确动作是终端里 `agy logout`）。

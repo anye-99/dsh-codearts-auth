@@ -13,6 +13,7 @@ import {
   retestAllAccounts,
 } from '../../src/account-probe.js'
 import type { ProbePool } from '../../src/account-probe.js'
+import { ALL_MODELS_RATE_LIMIT_KEY } from '../../src/account-pool.js'
 import type { ProviderAccountEntry } from '../../src/types.js'
 
 /** 构造账号条目；默认带一条 deepseek-v4.1-flash 的未到期限流记录。 */
@@ -126,6 +127,62 @@ describe('retestAccount', () => {
     expect(result.tested).toBe(0)
     expect(probe).not.toHaveBeenCalled()
     expect(pool.cleared).toEqual([])
+  })
+
+  /**
+   * 「整账号受限」保留键（`'*'`）必须换成一个**真实**模型再探测 ——
+   * **防的是一个新的死循环**。
+   *
+   * Qoder 的日额度（code 110）实测按**账号**结算，故现在写的是保留键
+   * （见 `account-pool.ts` 的 `ALL_MODELS_RATE_LIMIT_KEY`）。而重测的语义是
+   * 「拿这个模型名真发一条消息」—— 若直接把 `'*'` 发出去，上游必然回
+   * 「未知模型」，于是**标记永远清不掉**。本仓库已两次记录过这一形态的死循环
+   * （`account-probe.ts` 顶部的分派表注释）。
+   *
+   * ⚠️ 同时必须验证**清除的是原键**（`'*'`）而不是被替换后的真实模型名 ——
+   * 否则标记留在存储里、UI 徽章常驻，等于没清。
+   */
+  it('整账号保留键换成真实模型探测，但清除的是原键（不造清不掉的标记）', async () => {
+    const pool = makePool([makeEntry({
+      provider: 'qoder',
+      modelRateLimits: { [ALL_MODELS_RATE_LIMIT_KEY]: Date.now() + 3600_000 },
+    })])
+    const probed: string[] = []
+    const probe = vi.fn(async (_entry: ProviderAccountEntry, modelId: string) => {
+      probed.push(modelId)
+      return { modelId, ok: true }
+    })
+
+    const result = await retestAccount(pool, 'buddy-1', { probe })
+
+    // ① 真正发出去的**不是** `'*'`（那会被上游判未知模型）
+    expect(probed).toEqual([expect.not.stringMatching(/^\*$/)])
+    // ② Qoder 的表里有免费模型，优先拿它（重测不该烧付费额度）
+    expect(probed[0]).toBe('qmodel_38max')
+    // ③ 清除的是**存储里的原键**
+    expect(pool.cleared).toEqual([{ accountId: 'buddy-1', modelIds: [ALL_MODELS_RATE_LIMIT_KEY] }])
+    expect(pool.get('buddy-1')?.modelRateLimits).toBeUndefined()
+    // ④ 回报给 UI 的键也是原键（否则徽章按错误键找不回来）
+    expect(result.cleared).toEqual([ALL_MODELS_RATE_LIMIT_KEY])
+  })
+
+  it('非 Qoder 的未知保留键保守保留标记（探测如实失败，不误清）', async () => {
+    // 其它 provider 目前不写该键；真遇到时宁可不猜模型，也不要误判为「已恢复」。
+    const pool = makePool([makeEntry({
+      provider: 'buddy',
+      modelRateLimits: { [ALL_MODELS_RATE_LIMIT_KEY]: Date.now() + 3600_000 },
+    })])
+    const probe = vi.fn(async (_entry: ProviderAccountEntry, modelId: string) => (
+      { modelId, ok: false, message: '仍受限：未知模型' }
+    ))
+
+    const result = await retestAccount(pool, 'buddy-1', { probe })
+
+    expect(probe).toHaveBeenCalledWith(expect.anything(), ALL_MODELS_RATE_LIMIT_KEY)
+    expect(result.cleared).toEqual([])
+    expect(pool.get('buddy-1')?.modelRateLimits).toEqual({
+      [ALL_MODELS_RATE_LIMIT_KEY]: expect.any(Number),
+    })
   })
 
   /**

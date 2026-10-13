@@ -4,7 +4,8 @@
  * 验证单测无法证明的远端事实：
  * 1. 凭据（`session` 是 32 位 hex）对生产端点的有效性；
  * 2. **两套认证头**的交叉验证 —— chat 只认 Bearer、业务只认 token；
- * 3. 模型目录：11 条中 `type==='chat'` 的 8 条，且倍率**在 name 字符串里**；
+ * 3. 模型目录：13 条中 `type==='chat'` 的 10 条（含聚合入口 `auto`），
+ *    且倍率**在 name 字符串里**；
  * 4. 新手任务状态（**只读**，不领取）；
  * 5. 积分两池（永久 vs 每日）。
  *
@@ -74,7 +75,7 @@ suite('Loomy 只读探针（不发模型请求、不领取任务、不签到）'
     expect(bearerBody.code).toBe('100002')
   })
 
-  it('模型目录：8 个 chat 模型，倍率在 name 里', async () => {
+  it('模型目录：远端 chat 模型齐全，倍率在 name 里', async () => {
     const { credential } = entries[0]!
     const response = await fetch(`${LOOMY.apiBase}/models`, {
       headers: loomyBusinessHeaders(credential.access_token),
@@ -92,7 +93,15 @@ suite('Loomy 只读探针（不发模型请求、不领取任务、不签到）'
       console.log(`    ${model.id.padEnd(24)} ${model.name.padEnd(36)} ctx=${model.contextWindow}`)
     }
 
-    expect(all).toHaveLength(8)
+    // ⚠️ **不写死具体条数**：远端 chat 集合含聚合入口 `auto`，而它实测曾出现
+    // 偶发缺失（一轮 3 次采样中缺 1 次，后续 25 次全中）。写死 10 会偶发变红。
+    // 真正要锁的是「兜底表收录的每个真实模型都仍在远端」—— 兜底表过期才是缺陷。
+    const remoteIds = new Set(all.map((m) => m.id))
+    for (const model of LOOMY.fallbackModels) {
+      expect(remoteIds.has(model.id), `兜底表模型 ${model.id} 已不在远端目录中（需重采兜底表）`).toBe(true)
+    }
+    // 2026-10-09 实测 10 条（含 auto）；下限取 9 以容忍 auto 偶发缺失。
+    expect(all.length).toBeGreaterThanOrEqual(9)
     // 倍率必须已规范化（` · x{n}` 形态），不能残留全角括号
     for (const model of all) {
       expect(model.name, `${model.id} 的倍率未规范化`).not.toMatch(/[（(]x[\d.]+[)）]/)

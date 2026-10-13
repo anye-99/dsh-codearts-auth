@@ -97,9 +97,10 @@ describe('TRAE 产品配置', () => {
 })
 
 describe('TRAE 兜底模型目录', () => {
-  it('含 32 个模型（对齐 Go 端 staticModels 数量）', () => {
-    // handler.go:247-280 的 staticModels 共 32 条。
-    expect(TRAE.fallbackModels).toHaveLength(32)
+  it('含 52 个模型（Go 端 32 条快照 + 2026-10-09 远端实测新增 20 条）', () => {
+    // handler.go:247-280 的 staticModels 共 32 条；2026-10-09 实测远端多出
+    // 20 个可用模型（旧表缺失 ⇒ 远端失败时用户会少看到它们）。
+    expect(TRAE.fallbackModels).toHaveLength(52)
   })
 
   it('每个条目的 id / name / contextWindow 均完整有效', () => {
@@ -127,16 +128,38 @@ describe('TRAE 兜底模型目录', () => {
     }
   })
 
+  it('含 2026-10-09 远端实测新增的模型', () => {
+    const ids = new Set(TRAE.fallbackModels.map((m) => m.id))
+    for (const id of [
+      'qwen3.8-max', 'qwen3.8-flash', 'glm-5.3', 'glm-5.3-flash', 'glm-5.3-flashx',
+      'glm-5.1', 'glm-5v-turbo', 'deepseek-v4.1-flash', 'DeepSeek-V4-Pro-Official',
+      'kimi-k2.8-preview', 'kimi-k2.5', 'mimo-v2.6-flash', 'mimo-v2.6-pro',
+      'step-5-preview', 'minimax-m2.7', 'qwen-3.6-plus', 'qwen-3.5',
+      'Doubao-Seed-Code', 'Doubao-Seed-Evolving', 'doubao_1_8',
+    ]) {
+      expect(ids.has(id), id).toBe(true)
+    }
+  })
+
   it('顺序照抄 Go 原表（保持与上游对比时的可比性）', () => {
     expect(TRAE.fallbackModels[0]!.id).toBe('DeepSeek-V4-Flash-Official')
     expect(TRAE.fallbackModels[6]!.id).toBe('glm-5.2')
-    expect(TRAE.fallbackModels[31]!.id).toBe('summary')
+    expect(TRAE.fallbackModels[TRAE.fallbackModels.length - 1]!.id).toBe('summary')
   })
 
-  it('contextWindow 为实测的 200000（旧的 131072 是估值，已被推翻）', () => {
-    for (const model of TRAE.fallbackModels) {
-      expect(model.contextWindow, model.id).toBe(200_000)
+  it('contextWindow 多数为实测的 200000，Doubao 系按远端校正为 256000', () => {
+    // ⚠️ 远端实测：`Doubao-Seed-*` 下发 256000，其余多数 200000。
+    // `Doubao-Seed-2.0-Code` 远端**未下发** context_length，故按「不猜」保持 200000。
+    const byId = new Map(TRAE.fallbackModels.map((m) => [m.id, m]))
+    for (const id of ['Doubao-Seed-2.1-Pro', 'Doubao-Seed-2.1-Turbo', 'Doubao-Seed-Code', 'Doubao-Seed-Evolving']) {
+      expect(byId.get(id)?.contextWindow, id).toBe(256_000)
     }
+    expect(byId.get('Doubao-Seed-2.0-Code')?.contextWindow).toBe(200_000)
+    // 其余仍为 200000（只有上述 4 条不是）
+    const others = TRAE.fallbackModels.filter((m) => m.contextWindow !== 200_000)
+    expect(others.map((m) => m.id).sort()).toEqual([
+      'Doubao-Seed-2.1-Pro', 'Doubao-Seed-2.1-Turbo', 'Doubao-Seed-Code', 'Doubao-Seed-Evolving',
+    ].sort())
   })
 
   it('标出已知的上游内部条目（远端不可用时也不该出现在目录里）', () => {

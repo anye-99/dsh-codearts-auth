@@ -5,15 +5,29 @@
  *
  * | 端点 | 内容 | 认证 |
  * |---|---|---|
- * | `GET {apiBase}/api/v1/ai/cline/recommended-models` | `{recommended[], free[], clinePass[]}`，**唯一权威的 free 集合** | **不需要** |
- * | `GET {apiBase}/api/v1/models` | 460 个 `{id, object, created, owned_by}` —— **只有 id** | 需要 |
+ * | `GET {apiBase}/api/v1/ai/cline/recommended-models` | `{recommended[], free[], clinePass[], clineCloud[]}`，**唯一权威的 free 集合** | **不需要** |
+ * | `GET {apiBase}/api/v1/models` | 469 个 `{id, object, created, owned_by}` —— **只有 id** | 需要 |
  *
- * ⚠️ **远端 `/models` 的 460 个 id 里根本没有 `cline-free/*`**
- * （实测 `Select-String 'cline-free/'` 零命中）。免费模型**只**由
+ * ⚠️ **远端 `/models` 的 469 个 id 里根本没有 `cline-free/*`**
+ * （实测 `cline-free/` 前缀零命中）。免费模型**只**由
  * `recommended-models` 下发 —— 这正是「只调 `/models` 会看不到任何免费模型」
  * 的原因，也是本模块必须同时打两个端点的理由。
  *
- * ⚠️ 内嵌兜底表**缺 `cline-free/gemini-3.8-flash`**（远端 `free` 有），
+ * ⚠️ **已知未修缺陷（2026-10-09 发现，本次只做模型列表数据更新故未动）**：
+ * 该响应现已多出第四个数组 **`clineCloud`**（实测内容仅
+ * `cline-cloud/deepseek-v4.1-flash` 一条），而
+ * {@link parseClineRecommendedModels} **只解析 `free` / `recommended` /
+ * `clinePass`** ⇒ 该条目**整个丢失**，用户在列表里看不到它。
+ * 前端 `plugin-src/client/model-groups.js` 早已有 `cline-cloud/*` 的分组规则
+ * （「Cline Cloud」组，注释还写着「目前就没有」），说明这条链路本应打通。
+ *
+ * 未一并修的理由：① 本次任务是「更新模型列表数据」；
+ * ② 实测该 id 当前**不可调用** —— `POST /api/v1/chat/completions` 回
+ * `403 {"code":"API_REQUEST_ERROR_CODE","message":"Error 403: This request is not supported."}`
+ * （见 `scripts/probe-cline-availability.mjs`），收进列表只会让用户选中后报错。
+ * 修解析器时应同时确认它是否已转为可用。
+ *
+ * ⚠️ 兜底表与远端 `free` 数组**逐条对齐**（2026-10-09 更新后同为 4 条），
  * 反之 `/models` 有大量兜底表没有的付费模型。故正确做法是**合并**，
  * 而不是「远端失败就用兜底」的简单回退。
  *

@@ -5,6 +5,7 @@
 // (agy rejects --effort for Claude/GPT-OSS). Discovery failure falls back to
 // a bundled catalog so the /model picker is never empty.
 import type { FallbackModelDef, PluginConfig } from './types.js'
+import { AGY_MODELS_SPAWN_TIMEOUT_MS } from './types.js'
 
 export interface RawModel { slug: string; label: string }
 
@@ -223,7 +224,11 @@ export class ModelCatalog {
   private async refresh(): Promise<void> {
     try {
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 30_000);
+      // ⚠️ 外层比内层 spawn 预算多 5s headroom：原先这里是裸 30_000，而
+      // `agy-service.ts` 的 discover 用 15_000 —— 内层先到期，外层这道形同虚设。
+      // 现在两处共用 `AGY_MODELS_SPAWN_TIMEOUT_MS`，外层必须**晚于**内层，
+      // 否则两边同时触发会让 aborted 与 timedOut 竞态、错误归因不稳定。
+      const timer = setTimeout(() => ac.abort(), AGY_MODELS_SPAWN_TIMEOUT_MS + 5_000);
       try {
         const { stdout } = await this.discover(ac.signal);
         const raw = parseModelsOutput(stdout);

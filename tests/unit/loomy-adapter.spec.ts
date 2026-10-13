@@ -87,11 +87,13 @@ describe('LoomyAdapter.listModels', () => {
     expect(models[0]!.name).toBe('MiniMax M3 · x4.0')
   })
 
-  it('远端失败时回退兜底表（8 个，兜底表名已含倍率）', async () => {
+  it('远端失败时回退兜底表（9 个，兜底表名已含倍率）', async () => {
     const adapter = makeAdapter({ fetchRemoteModels: async () => { throw new Error('boom') } })
     const models = await adapter.listModels('loomy')
-    expect(models).toHaveLength(8)
+    expect(models).toHaveLength(9)
     expect(models.map((m) => m.id)).toContain('qwen3.8-flash')
+    // 2026-10-09 新增的默认模型也在兜底表里
+    expect(models.map((m) => m.id)).toContain('DeepSeek-V4.1-Flash')
   })
 
   it('无账号池时目录可见（headless/单测保守放行）', async () => {
@@ -118,7 +120,7 @@ describe('LoomyAdapter.listModels', () => {
     })
     const ids = (await adapter.listModels('loomy')).map((m) => m.id)
     expect(ids).not.toContain('spark-x')
-    expect(ids.length).toBe(7)
+    expect(ids.length).toBe(8)
   })
 })
 
@@ -133,7 +135,8 @@ describe('LoomyAdapter.listAllModels', () => {
     const all = adapter.listAllModels()
     // 被关闭的 spark-x 也必须出现（否则用户无法重新打开）
     expect(all.map((m) => m.id)).toContain('spark-x')
-    expect(all.find((m) => m.id === 'spark-x')!.name).toBe('Spark X2.5 · x0.1')
+    // ⚠️ 上游已把 spark-x 的倍率位改成状态文案「限时免费」，兜底表随之对齐。
+    expect(all.find((m) => m.id === 'spark-x')!.name).toBe('Spark X2.5（限时免费）')
   })
 })
 
@@ -141,8 +144,16 @@ describe('LoomyAdapter.resolveModel', () => {
   it('name 不带倍率（价格只属于选择列表语境）', async () => {
     const adapter = makeAdapter()
     const resolved = await adapter.resolveModel('loomy', 'spark-x')
-    expect(resolved.name).toBe('Spark X2.5')
+    // ⚠️ spark-x 的展示名里已**没有可剥离的倍率**（上游改成「限时免费」文案），
+    // 故 resolveModel 原样返回它 —— 这与远端路径的行为一致。
+    expect(resolved.name).toBe('Spark X2.5（限时免费）')
     expect(resolved.context?.contextWindow).toBe(1_048_576)
+  })
+
+  it('带倍率的模型在 resolveModel 里剥掉倍率', async () => {
+    const adapter = makeAdapter()
+    const resolved = await adapter.resolveModel('loomy', 'MiniMax-M3')
+    expect(resolved.name).toBe('MiniMax M3')
   })
 
   it('未知模型不编造 context', async () => {
@@ -163,7 +174,7 @@ describe('LoomyAdapter.resolveModel', () => {
  * 用户要求「如果能从远端得到配置中直接生成是最好的」—— 正是本实现的做法。
  */
 describe('LoomyAdapter 思考档位', () => {
-  /** 实测的档位（8 个 chat 模型完全一致）。 */
+  /** 实测的档位（9 个带档位的 chat 模型完全一致）。 */
   const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh']
 
   it('parseLoomyRemoteModels 读出 reasoning_efforts 与默认档', () => {

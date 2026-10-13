@@ -25,10 +25,16 @@ import { registerZcodeLlm } from './zcode-adapter.js'
 import { ZCODE } from './zcode-product.js'
 import { ZCODE_CAPTCHA_FALLBACK } from './zcode-captcha.js'
 import type { ZcodeCredential } from './zcode.js'
-import { AccountPool } from './account-pool.js'
+import { AccountPool, rateLimitedUntil } from './account-pool.js'
 import { hasLegacyNamespaceRegistration, settingsOf, suppressAutoSettingsPage } from './settings-compat.js'
 import type { ImageRequestTarget } from './image-budget.js'
 import { buildRaccoonNickname, registerJetHubRpc } from './jet-hub-rpc.js'
+// 每日自动签到：RPC 的 `credits.claimAll` 与自动签到**共用同一个领取实现**
+// （`claimAllForProvider`），避免「哪个 provider 要不要预检状态」的分支知识
+// 分裂成两份 —— 那些分支背后每一条都是一次真实缺陷。
+import { claimAllForProvider } from './jet-hub-rpc.js'
+import { createAutoCheckinController } from './auto-checkin-controller.js'
+import { createAutoCheckinStore } from './auto-checkin-store.js'
 import { CODEBUDDY, WORKBUDDY, type BuddyProduct } from './product.js'
 import { buddyExpiringWindowDays } from './buddy-balance-rank.js'
 import { BuddyBalanceSelector, pickBuddyAccount } from './buddy-balance-selector.js'
@@ -47,6 +53,23 @@ import { MinimaxAuth } from './minimax-auth.js'
 import { registerMinimaxLlm } from './minimax-adapter.js'
 import { MINIMAX } from './minimax-product.js'
 import type { MinimaxCredential } from './minimax.js'
+// ===== TeleAgent（星辰超级智能体，中国电信天翼 AI）=====
+// OpenAI 兼容协议族（**无加密**），登录靠「浏览器授权 → 用户粘贴回调 URL 取 token」，
+// **无续期端点**（refresh 退化为探测有效性）。详见 docs/teleagent-protocol-notes.md。
+import { TeleagentAuth } from './teleagent-auth.js'
+import { registerTeleagentLlm } from './teleagent-adapter.js'
+import { TELEAGENT } from './teleagent-product.js'
+import type { TeleagentCredential } from './teleagent.js'
+// ===== Step Code（阶跃星辰 StepFun 官方终端 Agent CLI）=====
+// OpenAI 兼容协议族（**无加密、无签名**，只有一个 Bearer 头）；登录是
+// 「浏览器授权 + 本地轮询」的设备流（不需要监听端口、也不需要用户粘贴回调），
+// 凭据是**静态 api_key**、**无续期端点**（refresh 退化为探测有效性）。
+// 全部常量逐字取自官方发行包 step-0.1.3-windows-x64.zip 的内嵌 bundle，
+// 取证与「文档 vs 代码」冲突裁决见 src/stepcode-product.ts 模块头。
+import { StepcodeAuth } from './stepcode-auth.js'
+import { registerStepcodeLlm } from './stepcode-adapter.js'
+import { STEPCODE } from './stepcode-product.js'
+import type { StepcodeCredential } from './stepcode.js'
 // ===== Antigravity（Google agy CLI：账号池 + 进程桥接推理） =====
 // 自实现版：不再依赖 dsh-agy-link 插件。协议层在 src/agy/（runner/auth/pool/
 // quota/models），装配在 src/agy-service.ts，LlmAdapter 在 src/antigravity-adapter.ts。
@@ -224,7 +247,7 @@ export function apply(ctx: Context): void {
   registerProviderSettings(
     ctx, 'llm-buddy', 'llm-workbuddy', 'llm-codearts', 'llm-lobsterai',
     'llm-qoder', 'llm-qodercn', 'llm-trae', 'llm-cline', 'llm-loomy', 'llm-raccoon',
-    'llm-minimax', 'llm-zcode', 'llm-antigravity',
+    'llm-minimax', 'llm-zcode', 'llm-teleagent', 'llm-stepcode', 'llm-antigravity',
   )
   const service = new CodeArtsAuth(ctx)
   const pool = new AccountPool(ctx)
@@ -335,12 +358,11 @@ export function apply(ctx: Context): void {
       .listAccountsByProvider(options.product.id)
       .filter(a => a.enabled)
       .filter((a) => {
-        // 与 `getAvailableAccount` 的限流判据保持一致（空 modelId = 不过滤）。
-        const key = options.modelId ?? ''
-        if (key.length === 0) return true
-        if (!a.modelRateLimits) return true
-        const resetAt = a.modelRateLimits[key]
-        return resetAt === undefined || resetAt === 0 || Date.now() >= resetAt
+        // ⚠️ 判据必须走 `rateLimitedUntil`（**不要**在此内联「按键取时刻」的写法）：
+        // 该函数同时认「按模型」与「整账号」两种标记，而内联写法只认前者 ——
+        // 会让被整账号标记的账号（Qoder 日额度 code 110）重新进入候选，
+        // 与 `getAvailableAccount` 的过滤结果不一致（下方注释声明的就是这个契约）。
+        return rateLimitedUntil(a.modelRateLimits, options.modelId ?? '') === undefined
       })
       .map(a => ({ id: a.id, credentialRef: a.credentialRef }))
 
@@ -798,12 +820,10 @@ export function apply(ctx: Context): void {
         .listAccountsByProvider(LOOMY.id)
         .filter(a => a.enabled)
         .filter((a) => {
-          // 与 `getAvailableAccount` 的限流判据保持一致（空 modelId = 不过滤）。
-          const key = modelId ?? ''
-          if (key.length === 0) return true
-          if (!a.modelRateLimits) return true
-          const resetAt = a.modelRateLimits[key]
-          return resetAt === undefined || resetAt === 0 || Date.now() >= resetAt
+          // ⚠️ 判据统一走 `rateLimitedUntil`（与 `getAvailableAccount` 同源）：
+          // 内联「按键取时刻」的写法会漏掉「整账号」保留键，
+          // 使被整账号标记的账号重新进入候选。
+          return rateLimitedUntil(a.modelRateLimits, modelId ?? '') === undefined
         })
         .map(a => ({ id: a.id, credentialRef: a.credentialRef }))
 
@@ -1045,6 +1065,74 @@ export function apply(ctx: Context): void {
     ctx.logger.warn(`[jet-hub] 修正 Raccoon 账号显示名失败：${String(error)}`)
   })
 
+// ===== TeleAgent（星辰超级智能体，中国电信天翼 AI）=====
+//
+// 与前面所有 provider 的三处差异（全部逆向官方安装包取证，见
+// docs/teleagent-protocol-notes.md）：
+//   1. 协议是 **OpenAI 兼容且无加密**（不像 qoder 要 WASM 签名、
+//      不像 minimax/zcode 是 Anthropic Messages、不像 trae 是 SOLO）——
+//      故 SSE 消费直接复用 `src/openai-compat.ts`，没有 messages 层。
+//   2. **两个凭据在两个不同的头上**：`Authorization: Bearer <内置渠道 apiKey>`
+//      + `X-Token: <用户 token>`。把用户 token 塞进 Bearer 会 401。
+//   3. 登录产物**只能靠用户粘贴回调 URL**：官方桌面端靠自带 BrowserWindow
+//      监听导航抓 `…/cowork/auth?code=…&token=…`，而回调地址是**服务端常量**
+//      （没有 redirect_uri 可配），插件没有那个窗口 ⇒ 必须走人工粘贴
+//      （与 Antigravity「loopback 绑不上时降级为粘码」同一处置思路）。
+//
+// ⚠ **不可续期**：asar 全文没有 refresh_token / ExchangeToken / token 刷新调用。
+// 失效时只能重新登录，`refresh()` 退化为「探测有效性」（Loomy 同型）。
+//
+// 服务名注册为 ctx.teleagentAuth（由 `Service` 基类完成）。
+// 不注册斜杠命令：入口在 Jet Hub 的 TeleAgent 面板。
+const teleagent = new TeleagentAuth(ctx)
+const teleagentAdapter = registerTeleagentLlm(ctx, {
+  credentialRef: credentialRef(TELEAGENT.defaultCredentialRef),
+  resolveCredential: async (modelId?: string) => {
+    // provider 实参用 TELEAGENT.id 而非字面量：写死字面量在改名/多产品场景下
+    // 会静默查不到账号（本插件在 workbuddy 上踩过同类坑）。
+    // ⚠ 只从 teleagent 自己的账号池取账号，回退到自己的单凭据 ref，
+    // 保证不会串用其它 provider 的凭据。
+    const available = await pool.getAvailableAccount(TELEAGENT.id, modelId ?? '')
+    // `getAvailableAccount` 的凭据类型是历史遗留的联合（`CodeArtsCredential |
+    // BuddyCredential`），与 `TeleagentCredential` 无充分重叠，故经 `unknown` 转换。
+    // 运行时安全性由 provider 过滤保证：查询用 `TELEAGENT.id`，取到的必是 teleagent 凭据。
+    if (available) return available.credential as unknown as TeleagentCredential
+    const resolved = await ctx.credentials.resolve(credentialRef(TELEAGENT.defaultCredentialRef))
+    if (!resolved) return undefined
+    try {
+      return JSON.parse(resolved.value) as TeleagentCredential
+    } catch {
+      return undefined
+    }
+  },
+  refresh: async () => {
+    // ⚠ TeleAgent **没有** refresh 端点 —— 这里做的是「探测当前凭据是否仍有效」，
+    // 失败抛 `RefreshTokenExpiredError` 让调度器停下来（而不是无限重试）。
+    // 仍须刷新**解析凭据时所用的那一个**账号，而不是默认单凭据 ref ——
+    // 否则探测的是另一份凭据，用户会看到「刚登录好却一直认证失败」。
+    const available = await pool.getAvailableAccount(TELEAGENT.id, '')
+    if (available) {
+      // ⚠ **必须传 pool + entry.id**：`getAvailableAccount` 返回
+      // **`{ entry, credential }`** 两层 —— 账号 id 与 credentialRef 在
+      // **`available.entry`** 里（写成 `available.id` 是 `undefined`，
+      // 会让回填**静默不生效**）。
+      await teleagent.refreshAccountCredential(
+        available.entry.credentialRef, pool, available.entry.id,
+      )
+    } else {
+      await teleagent.refresh()
+    }
+  },
+  // 远端模型目录：当前返回兜底表（**不发网络请求** —— 拉取端点未定位到，
+  // 凭猜测发一个可能 404 的请求是 AGENTS.md 的红线）。详见 `fetchModels` 注释。
+  fetchRemoteModels: () => teleagent.fetchModels(),
+  // 图片字节桥接：兜底表 `supportsImage` 恒 false（未实测），故实际不会用到；
+  // 接上它是为了「实测带图通过后只需改兜底表」，不必再动接线。
+  readImage: makeReadImage(ctx),
+  accountPool: pool,
+  product: TELEAGENT,
+})
+
 // ===== ZCode（智谱 z.ai 免费额度通道）=====
 //
 // 形态与前面所有 provider **相同**：读凭据 → 直发远端。
@@ -1207,6 +1295,83 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   currentAccountId: () => activeZcodeAccountId.get(ZCODE.id),
 })
 
+  // ===== Step Code（阶跃星辰 StepFun 官方终端 Agent CLI）=====
+  //
+  // 与前面所有 provider 的差异（全部逆向官方发行包取证，逐字摘录见
+  // src/stepcode-product.ts 与 src/stepcode.ts 的模块头）：
+  //   1. 协议是 **OpenAI 兼容且无加密无签名** —— 只有一个
+  //      `Authorization: Bearer <api_key>` 头，连 teleagent 那种「双凭据头 +
+  //      HMAC 签名」都没有。⇒ 是本仓库**最薄**的一个适配器，SSE 消费直接
+  //      复用 `src/openai-compat.ts`，没有 messages 层。
+  //      ⚠️ 发行包内的 `docs/step-integration.md` 仍写着 `anthropic-messages`，
+  //      那是**过时文档**（它点名的 `models-endpoint-repair` 模块在 0.1.3 的
+  //      step.exe 里 0 命中）；判据见 stepcode-product.ts 模块头。
+  //   2. 登录是**浏览器授权 + 本地轮询**的设备流：`POST /api/stdhttp/v1/cli-login/init`
+  //      拿 flow_id → 用户在任意浏览器打开 `/cli-login-remote?flow_id=` →
+  //      轮询 `/poll/{flow_id}` 取 `credential.api_key`。
+  //      ⇒ **既不需要本地监听端口**（没有端口可泄漏），**也不需要用户粘贴回调 URL**
+  //      （teleagent 那条路）。与 qoder / minimax 的设备码轮询同型，
+  //      故走标准两步式登录，**不需要任何扩展动词**。
+  //   3. 凭据是**静态 api_key，永不过期，没有续期端点** —— 官方
+  //      `refreshStepOAuth()` 不发任何请求，只校验哨兵串
+  //      `"step-static-credential"` 后原样返回 `expires: MAX_SAFE_INTEGER`。
+  //
+  // ⚠ **不可续期**：`isStepcodeRefreshable` 恒 false，`refresh()` 退化为
+  // 「探测有效性」（用 `GET /v1/models`，与官方 `step login status` 同判据）。
+  //
+  // 服务名注册为 ctx.stepcodeAuth（由 `Service` 基类完成）。
+  // 不注册斜杠命令：入口在 Jet Hub 的 Step Code 面板。
+  const stepcode = new StepcodeAuth(ctx)
+  const stepcodeAdapter = registerStepcodeLlm(ctx, {
+    credentialRef: credentialRef(STEPCODE.defaultCredentialRef),
+    resolveCredential: async (modelId?: string) => {
+      // provider 实参用 STEPCODE.id 而非字面量：写死字面量在改名/多产品场景下
+      // 会静默查不到账号（本插件在 workbuddy 上踩过同类坑）。
+      // ⚠ 只从 stepcode 自己的账号池取账号，回退到自己的单凭据 ref，
+      // 保证不会串用其它 provider 的凭据。
+      const available = await pool.getAvailableAccount(STEPCODE.id, modelId ?? '')
+      // `getAvailableAccount` 的凭据类型是历史遗留的联合，与 `StepcodeCredential`
+      // 无充分重叠，故经 `unknown` 转换。运行时安全性由 provider 过滤保证：
+      // 查询用 `STEPCODE.id`，取到的必是 stepcode 凭据。
+      if (available) return available.credential as unknown as StepcodeCredential
+      const resolved = await ctx.credentials.resolve(credentialRef(STEPCODE.defaultCredentialRef))
+      if (!resolved) return undefined
+      try {
+        return JSON.parse(resolved.value) as StepcodeCredential
+      } catch {
+        return undefined
+      }
+    },
+    refresh: async () => {
+      // ⚠ Step Code **没有** refresh 端点 —— 这里做的是「探测当前凭据是否仍有效」，
+      // 明确失效时抛 `RefreshTokenExpiredError` 让调度器停下来（而不是无限重试）。
+      // 仍须探测**解析凭据时所用的那一个**账号，而不是默认单凭据 ref ——
+      // 否则探测的是另一份凭据，用户会看到「刚登录好却一直认证失败」。
+      const available = await pool.getAvailableAccount(STEPCODE.id, '')
+      if (available) {
+        // ⚠ **必须传 pool + entry.id**：`getAvailableAccount` 返回
+        // **`{ entry, credential }`** 两层 —— 账号 id 与 credentialRef 在
+        // **`available.entry`** 里（写成 `available.id` 是 `undefined`，
+        // 会让回填**静默不生效**）。
+        await stepcode.refreshAccountCredential(
+          available.entry.credentialRef, pool, available.entry.id,
+        )
+      } else {
+        await stepcode.refresh()
+      }
+    },
+    // ⚠ **必须把账号池传进去**：模型目录是**账号级**的（官方文档明示
+    // 「可用模型和额度取决于账户权限」，Mini/Plus/Pro/Max 看到的目录不同），
+    // 拉取时要带**当前可用账号**的 Bearer。不传就只会用默认单凭据 ref，
+    // 多账号场景下会拿到另一个账号的目录。
+    fetchRemoteModels: () => stepcode.fetchModels(pool),
+    // 图片字节桥接：是否真的可用取决于远端逐模型的 `enable_vision_input`
+    //（适配器据此决定「内联」还是「抛 UNSUPPORTED_CONTENT」，绝不静默丢图）。
+    readImage: makeReadImage(ctx),
+    accountPool: pool,
+    product: STEPCODE,
+  })
+
 
   // 一次性修复**老 TRAE 账号**的展示名（与上面 Raccoon 同类，同因）：
   // 服务端 ScreenName 是**按 uid 自动生成的默认名**（`用户26815487395`），
@@ -1238,6 +1403,43 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     }
   }).catch((error: unknown) => {
     ctx.logger.warn(`[jet-hub] 修正 LobsterAI 账号显示名失败：${String(error)}`)
+  })
+
+  // ===== 每日自动签到 =====
+  //
+  // 时机是「**打开 DSH 时**」（用户 2026-10-13 定），而不是每天固定钟点：
+  // DSH 不是常驻服务，做成「每天 10:05 跑」实际会退化成「恰好那一刻 DSH 开着
+  // 才签」—— 比「打开就签」**更不可靠**，却让用户以为它准时（详见
+  // `src/auto-checkin.ts` 模块头）。
+  //
+  // 闸门（开关 / 当天是否已签完 / 次数上限 / UTC+8 日界）全部在
+  // `src/auto-checkin.ts` 的纯函数里，这里只负责接线与触发。
+  const autoCheckin = createAutoCheckinController({
+    store: createAutoCheckinStore(ctx),
+    /**
+     * 逐渠道领取 —— 走**与 RPC 完全同一个实现**（`claimAllForProvider`）。
+     *
+     * ⚠️ 这里的 `try/catch` 不是「吞掉错误」：执行器本身就是逐渠道 try 的
+     * （单渠道失败不中断整体），故这里的职责只是把异常转成它要的
+     * `{ ok: false, message }` 形状 —— 漏了这一层，一个渠道的异常会冒到
+     * 执行器之外，让**整次自动签到**（含后续渠道）一起结束。
+     */
+    claim: async (provider) => {
+      try {
+        const value = await claimAllForProvider(provider, {
+          pool,
+          resolve: (ref) => ctx.credentials.resolve(ref),
+          lobsterai,
+          loomy,
+          zcode,
+          warn: (msg) => ctx.logger?.warn?.(msg),
+        })
+        return { ok: true, summary: value.summary }
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) }
+      }
+    },
+    log: (message) => ctx.logger?.info?.(message),
   })
 
   // ===== 多账号静默续期调度 =====
@@ -1281,11 +1483,21 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     // MiniMax **可续期**（refresh_token 授权，会轮换 refresh_token）。
     // 与 raccoon 同款：只按 refreshable 过滤，不看 enabled。
     ['minimax', (p) => minimax.refreshAll(p)],
+    // ⚠ TeleAgent **不可续期**（无 refresh 端点）：`refreshAll` 只按
+    // `refreshable` 过滤，而本 provider 恒 false ⇒ 循环体不发任何请求。
+    // 保留这一条是为了让批量入口的形状与其余 provider 一致，
+    // 且**不会**像「无条件全量探测」那样每 30 分钟骚扰服务端一次。
+    ['teleagent', (p) => teleagent.refreshAll(p)],
     // zcode **不可续期**（凭据是静态的）—— 但这个方法仍做实事：
     // 把磁盘上最新的凭据回写到全部 zcode 账号，
     // 使用户在官方客户端重新登录后无需重启 DSH。
     // ⚠ 只按 `refreshable` 过滤、**不看 `enabled`**（AGENTS.md 既有约定）。
     ['zcode', (p) => zcode.refreshAll(p)],
+    // ⚠ Step Code **不可续期**（凭据是静态 api_key，官方 refresh 只是校验哨兵串
+    // 后原样返回，不发任何请求）⇒ `refreshAll` 按 `refreshable` 过滤后
+    // 循环体**不发任何请求**。保留这一条是为了让批量入口的形状与其余 14 家一致，
+    // 且**不会**像「无条件全量探测」那样每 5 分钟骚扰服务端一次。
+    ['stepcode', (p) => stepcode.refreshAll(p)],
     // Antigravity **无凭据可续**（官方 agy 二进制自续期）：refreshAll 做保守
     // 闸门的配额刷新（跳过 cooldown / 待重登账号），与下方独立的后台配额
     // 轮询互补 —— 那张表驱动"何时刷"，这里驱动"批量入口的形状与其余 13 家一致"。
@@ -1330,7 +1542,27 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
   // 既补上了首轮，又不会在启动时打出几十个无谓请求。
   pool.listAllAccounts().then(accounts => {
     if (accounts.length === 0) return
+    // ⚠️ **自动签到挂在首轮续期之后**（`.then()`，不是并发）：
+    // 启动瞬间池里可能整批都是过期凭据，此时直接签会得到一片 AUTH 失败 ——
+    // 而失败**会消耗当天的尝试次数**（上限 3 次），用户当天就少了一次机会。
+    // 先让 `refreshAllCredentials()` 把凭据刷到新鲜，再签。
+    //
+    // ⚠️ 续期整批失败（存储层异常等）**不阻断**签到：签到的取号入口按
+    // `rateLimitedUntil` 过滤，与「今天还能不能推理」无关；而「今天干脆不签」
+    // 会**直接损失当天额度** —— 那是本功能最不该造成的结果。
     void refreshAllCredentials()
+      .catch((error: unknown) => {
+        ctx.logger?.warn?.(
+          `[jet-hub] 首轮续期失败（不影响每日自动签到）：${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+      .then(() => autoCheckin.trigger())
+      .catch((error: unknown) => {
+        // 执行器内部逐渠道 try，故能冒到这里的是「整批级」异常（如状态落盘失败）。
+        ctx.logger?.warn?.(
+          `[jet-hub] 每日自动签到失败：${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
     const refreshTimer = setInterval(() => void refreshAllCredentials(), REFRESH_INTERVAL_MS)
     refreshTimer.unref?.()
     ctx.effect(() => () => {
@@ -1414,7 +1646,10 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     // 登录门控：未登录时 listModels 返回空目录（选择器隐藏整组），避免一排
     // "点了必失败"的模型。探针在适配器内**后台**跑，绝不阻塞目录构建
     // （await 它就是 2026-10-02 那个永久 loading 故障的同型回归）。
-    probeSignedIn: () => agyService.auth.probeSignedIn(),
+    // ⚠️ 走 `gateProbe()` 而不是裸探针：探针判「未登录」时它先**主动续期一次
+    // agy 的 access token** 再重探（agy 在 `models` 路径上不自续期，token 一过期
+    // 就报 Please sign in —— 2026-10-10「模型列表没有 antigravity 的模型」的根因）。
+    probeSignedIn: () => agyService.gateProbe(),
     isDormant: () => agyService.dormant !== null,
     notifyCatalogChanged: () => {
       try {
@@ -1467,10 +1702,12 @@ const zcodeAdapter = registerZcodeLlm(ctx, {
     loomy: loomyAdapter,
     raccoon: raccoonAdapter,
     minimax: minimaxAdapter,
+    teleagent: teleagentAdapter,
     zcode: zcodeAdapter,
+    stepcode: stepcodeAdapter,
     antigravity: agyAdapter,
   }
 
-  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, agyService, modelAdapters)
+  registerJetHubRpc(ctx, pool, service, buddy, workbuddy, lobsterai, qoder, qoderCn, trae, cline, loomy, raccoon, minimax, teleagent, zcode, stepcode, agyService, modelAdapters, autoCheckin)
   ctx.provide('accountPool', pool)
 }

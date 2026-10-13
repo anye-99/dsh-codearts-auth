@@ -73,8 +73,9 @@ describe('LobsterAI 产品配置', () => {
 })
 
 describe('LobsterAI 兜底模型目录', () => {
-  it('含 19 个模型（对齐 handler.go 的 staticModels 数量）', () => {
-    expect(LOBSTERAI.fallbackModels).toHaveLength(19)
+  it('含 30 个模型（2026-10-09 按远端 /api/models/available 实测重采）', () => {
+    // ⚠️ 旧表是 19 条的编译期快照，实测远端已返回 30 条（漏 12、多 1）。
+    expect(LOBSTERAI.fallbackModels).toHaveLength(30)
   })
 
   it('每个条目的 id / name / contextWindow 均完整有效', () => {
@@ -94,24 +95,56 @@ describe('LobsterAI 兜底模型目录', () => {
 
   it('覆盖四家厂商的实测模型', () => {
     const ids = new Set(LOBSTERAI.fallbackModels.map((m) => m.id))
-    for (const id of ['deepseek-v4-flash', 'deepseek-v4-pro', 'MiniMax-M3', 'qwen3.7-max',
-      'kimi-k2.6', 'glm-5.2', 'doubao-seed-2-1-pro-260628']) {
+    for (const id of ['deepseek-flash', 'deepseek-v4-pro', 'MiniMax-M3', 'qwen3.8-max',
+      'kimi-k3', 'glm-5.2', 'doubao-seed-2-1-pro-260915']) {
       expect(ids.has(id), id).toBe(true)
     }
   })
 
-  it('顺序照抄 Go 原表（保持与上游对比时的可比性）', () => {
-    expect(LOBSTERAI.fallbackModels[0]!.id).toBe('deepseek-v4-flash')
-    expect(LOBSTERAI.fallbackModels[1]!.id).toBe('deepseek-v4-pro')
-    expect(LOBSTERAI.fallbackModels[18]!.id).toBe('glm-5')
+  it('含 2026-10-09 新增的 12 条（旧表完全没有）', () => {
+    const ids = new Set(LOBSTERAI.fallbackModels.map((m) => m.id))
+    for (const id of [
+      'deepseek-flash', 'glm-5.3-flashx', 'glm-5.3-flash', 'glm-5.3',
+      'MiniMax-M3.1-Flash-Preview', 'qwen3.8-max', 'qwen3.8-flash',
+      'qwen3.8-omni-flash', 'kimi-k3', 'kimi-k2.8-preview',
+      'doubao-seed-2-1-pro-260915', 'deepseek-v4-flash-vision-exp',
+    ]) {
+      expect(ids.has(id), id).toBe(true)
+    }
   })
 
-  it('contextWindow 全部为桥接层的估计值 131072（非远端权威值）', () => {
-    // 远端 /api/models/available 只返回 modelId/modelName/provider/apiFormat，
-    // 不含窗口大小；131072 是 handler.go 统一填的，待逐个实测校正。
-    for (const model of LOBSTERAI.fallbackModels) {
-      expect(model.contextWindow, model.id).toBe(131_072)
-    }
+  it('已撤下的 doubao-seed-2-1-pro-260628 不再收录', () => {
+    // 远端已换成 -260915；留着会让用户选中一个上游不认的 id。
+    const ids = new Set(LOBSTERAI.fallbackModels.map((m) => m.id))
+    expect(ids.has('doubao-seed-2-1-pro-260628')).toBe(false)
+  })
+
+  it('顺序照抄远端原序（保持与上游对比时的可比性）', () => {
+    expect(LOBSTERAI.fallbackModels[0]!.id).toBe('deepseek-flash')
+    expect(LOBSTERAI.fallbackModels[1]!.id).toBe('deepseek-v4-pro')
+    expect(LOBSTERAI.fallbackModels[29]!.id).toBe('doubao-seed-2-0-code-preview-260215')
+  })
+
+  it('contextWindow 以远端权威值为准，未下发的 9 条才用 131072 估值', () => {
+    // ⚠️ 旧表**全部**填 131072（桥接层估值），会让 DSH 远早于真实能力触发压缩。
+    // 远端实测 30 条里 21 条下发窗口（多数 1000000）。
+    const withRemote = LOBSTERAI.fallbackModels.filter((m) => m.contextWindow !== 131_072)
+    expect(withRemote).toHaveLength(21)
+    expect(LOBSTERAI.fallbackModels.filter((m) => m.contextWindow === 131_072)).toHaveLength(9)
+    // 抽查几个远端权威值（与 probe 采集一致）
+    const byId = new Map(LOBSTERAI.fallbackModels.map((m) => [m.id, m]))
+    expect(byId.get('deepseek-v4-flash')?.contextWindow).toBe(1_000_000)
+    expect(byId.get('kimi-k3')?.contextWindow).toBe(1_048_576)
+    expect(byId.get('kimi-k2.8-preview')?.contextWindow).toBe(262_144)
+    expect(byId.get('doubao-seed-2-1-pro-260915')?.contextWindow).toBe(256_000)
+  })
+
+  it('展示名用远端 modelName（不再是裸 id）', () => {
+    const byId = new Map(LOBSTERAI.fallbackModels.map((m) => [m.id, m]))
+    // 旧表 19 条里有 16 条 name 就是 id 本身，列表里全是裸 id 无从辨认。
+    expect(byId.get('deepseek-v4-flash')?.name).toBe('DeepSeek-V4-Flash')
+    expect(byId.get('qwen3.5-plus-2026-04-20')?.name).toBe('Qwen3.5-plus')
+    expect(byId.get('deepseek-flash')?.name).toBe('DeepSeek-V4.1-Flash')
   })
 })
 

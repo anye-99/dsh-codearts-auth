@@ -7,7 +7,7 @@ import {
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { ReasoningEffortId, ToolCallId } from '@deepseek-ai/dsh-llm'
 import { AccountPool, providerCatalogVisible } from './account-pool.js'
-import { isCodeArtsBenefitModel } from './models.js'
+import { forgetBenefitModel, isCodeArtsBenefitModel, rememberBenefitModel } from './models.js'
 import { normalizeHarnessMessages } from './message-shape.js'
 import { signRequestHuawei } from './sign.js'
 import { createBlankReasoningSuppressor, createReasoningLoopDetector, hasUsableToolName, isReasoningLoopGuardEnabled, isTruncatedArguments, normalizeToolArguments, readWithIdleTimeout, reasoningLoopFailure, resolveEmptyResponseReason, resolveToolPairing, stripCourseLeakFromHistoryContent, stripCourseLeakIfEnabled } from './sse.js'
@@ -21,18 +21,32 @@ export const PROVIDER = 'codearts'
 
 // DeepSeek V4（CodeArts Agent 模型列表新增，UI 标注"每日 1000 万免费 Tokens"福利）：
 //
-// 修正（2026-09-23，对齐 deveco-code-rust fb1b4a2）：早期注释称
-// 「deepseek-v4-flash-0731 后端未注册」，该结论**有误** —— 实测它返回 404 的
-// 真实原因是**缺少 `maas_type: benefit` 头**；带上该头即成功。带日期后缀与
-// 无后缀是后端上两个不同的模型，均有注册，不能互相替代：
-//   - deepseek-v4-flash-0731 / deepseek-v4-pro-0813 → benefit 模型（需 maas_type）
-//   - deepseek-v4-flash / deepseek-v4-pro（无后缀）  → 非 benefit（带该头会
-//     `unsupported model`）
-// gateway/config 返回的是 benefit 那组，故下方静态表保留无后缀形态
-// （无后缀始终可用，不依赖 benefit 头），而 deepseek-v4.1-flash 只有 benefit 形态。
+// ⚠️ 关于 `maas_type: benefit`（2026-10-09 第二次推翻，务必读完再改）：
+// 早期结论是「benefit 模型必须带该头，否则 404 not registered」。该结论**已失效**：
+// 实测当前服务端对**所有**模型带上该头都回 `InferHub.4004.200 benefit not found`，
+// 而默认不带时 GLM-5.2 / deepseek-v4-flash / kimi-k2.6-vl 等全部可用。
+// 故适配器改为**自适应**（默认不带，见 `stream()` 内的 `benefitAdded` /
+// `benefitRemoved`），不再依赖任何静态或远端清单。
+//
+// `glm-5.3-flash` 已**退役**（服务端不再注册，两种形态都失败），故不在此表：
+// 详见 `src/models.ts` 的 `RETIRED_MODEL_IDS`。
+//
+// ⚠️ **本表只在远端两个端点都失败时顶替**（见 `listModels` 的 `?? DEFAULT_MODELS`）。
+// 2026-10-09 实测复核（`scripts/probe-codearts-vl.mjs`）：远端当前下发 **7 条** ——
+// `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-v4.1-flash` / `GLM-5.2` /
+// `openpangu-2.0-flash` / `openpangu-2.0-pro` / `glm-5.2-sft-harmony`。
+//
+// ⚠️ **`GLM-5.1` 与 `GLM-5` 两个端点都不下发**，但**刻意保留**：
+// 它们只在本表生效（远端失败时），而按红线「某次实测没看到 ≠ 不存在」，
+// 无法排除「换账号/换区域后端仍注册」。删除它们会让远端抖动时的可用模型
+// **更少**，而保留的最坏代价只是列表里多两条点了会报错的条目。
+// ⚠️ 若将来确认已退役，应像 `glm-5.3-flash` 那样**显式**移入
+// `src/models.ts` 的 `RETIRED_MODEL_IDS`（那条路径会连带过滤远端下发）。
 const DEFAULT_MODELS: readonly string[] = [
   'GLM-5.2', 'GLM-5.1', 'GLM-5',
-  'glm-5.3-flash',
+  // ⚠️ 2026-10-09 补录：远端 `/v1/model/builtin` 下发它（展示名 `GLM-5.2-ArkTS-SPARK`），
+  // 而旧表漏了它 —— 远端失败时用户会少看到这个可用模型。
+  'glm-5.2-sft-harmony',
   'openpangu-2.0-flash', 'openpangu-2.0-pro',
   'deepseek-v4-flash', 'deepseek-v4-pro',
   'deepseek-v4.1-flash',
@@ -41,15 +55,15 @@ const DEFAULT_MODELS: readonly string[] = [
 /**
  * 模型上下文窗口（最大合并请求+响应 token 数）。
  * - GLM-5.2：202752（对齐 CodeArts Agent IDE 模型卡标注）。
- * - glm-5.3-flash：1048576（1M，逆向自 IDE gateway/config，对齐 deveco-code-rust 90aeb17d）。
  * - deepseek-v4-flash / deepseek-v4-pro：1048576（1M，UI 标注）。
  * - deepseek-v4.1-flash：1000000（对齐 IDE 下发的 inferhub-provider 模型配置，
  *   2026-09 kernel 日志；对齐 deveco-code-rust fb1b4a2）。
  * - 其余模型未公开上下文容量，留 undefined 让后端默认裁剪。
+ *
+ * ⚠️ `glm-5.3-flash` 的 1M 条目已随该模型退役一并移除（见 `DEFAULT_MODELS` 注释）。
  */
 const CONTEXT_WINDOWS: ReadonlyMap<string, number> = new Map([
   ['GLM-5.2', 202752],
-  ['glm-5.3-flash', 1_048_576],
   ['deepseek-v4-flash', 1048576],
   ['deepseek-v4-pro', 1048576],
   ['deepseek-v4.1-flash', 1_000_000],
@@ -341,6 +355,30 @@ function isQueueError(status: number, body: string): boolean {
     && (body.includes('TM.00001041')
       || /peak\s+usage|try\s+again\s+after|peak\s+hours/i.test(body)
       || /high\s+demand|too\s+many\s+requests/i.test(body))
+}
+
+/**
+ * 判断错误体是否为「该模型未注册」—— 即需要补 `maas_type: benefit` 的信号。
+ *
+ * 实测（2026-10-09）：benefit 模型在不带该头时回
+ * `InferHub.002002009.404 The model is not registered, please request other model`
+ * （HTTP 200 + SSE 内嵌 error_code）。这是**唯一**可信的「需要 benefit 头」判据
+ * —— 绝不能反过来从某个远端清单推断（见 `isCodeArtsBenefitModel` 的历史表格）。
+ */
+function isModelNotRegisteredError(body: string): boolean {
+  return /not\s+registered/i.test(body) || body.includes('002002009')
+}
+
+/**
+ * 判断错误体是否为「benefit 权益查不到」—— 即**不该**带 `maas_type` 的信号。
+ *
+ * 实测（2026-10-09）：当前服务端对所有模型带上该头都会回
+ * `InferHub.4004.200 benefit not found`（连 GLM-5.2 / kimi-k2.6-vl 这些非
+ * benefit 模型也一样），而默认不带时它们全部可用。因此见到该错误要
+ * **撤销**此前的学习记录，否则该模型会被永久锁死。
+ */
+function isBenefitNotFoundError(body: string): boolean {
+  return /benefit\s+not\s+found/i.test(body) || body.includes('4004.200')
 }
 
 /**
@@ -965,20 +1003,26 @@ export class CodeArtsAdapter extends LlmAdapter {
     // 因限流已尝试过的账号 id：保证每个账号只试一次，试完才判定"全部受限"。
     const rateLimitTried = new Set<string>()
     if (currentAccountId) rateLimitTried.add(currentAccountId)
-    // benefit（免费额度）模型判定在重试循环外先算好：它要读 benefit 集合缓存
-    // （`~/.cache/deveco/codearts_benefit_models.json`），不宜每轮重试都做 IO。
-    // 集合来自 gateway/config 的模型清单 ∪ 静态兜底（见 isCodeArtsBenefitModel），
-    // 使后端新增 benefit 模型时无需改代码即可自动识别。
-    const isBenefitModel = isCodeArtsBenefitModel(options.model)
+    // ⚠️ benefit（免费额度）判定已改为**自适应**（2026-10-09，第二次推翻）：
+    // 默认**不带** `maas_type`，只有当服务端明确回 `not registered` 时才补上并
+    // 重试一次；若带着该头却回 `benefit not found`，则撤销并重试。
+    //
+    // 为什么不采信任何清单：`gateway/config` 至今仍把已退役的 glm-5.3-flash
+    // 列在 `result.models` 里，且把 deepseek-v4.1-flash 列为 benefit —— 而实测
+    // 后者**带上该头反而失败**（3/3 稳定复现 `benefit not found`），不带时成功。
+    // 详见 `isCodeArtsBenefitModel` 的历史表格。
+    let isBenefitModel = isCodeArtsBenefitModel(options.model)
+    // 两个方向各自只允许纠偏**一次** —— 否则 `not registered` 与
+    // `benefit not found` 互为反面，会来回翻转、无限重试。
+    // 用两个独立标志（而非一个总开关）是为了让**双向**都能自愈：
+    // 过期的「需要 benefit」记录被撤销后，仍能重新学回来。
+    let benefitAdded = false
+    let benefitRemoved = false
     for (;;) {
-      // benefit（免费额度）模型（glm-5.3-flash、deepseek-v4.1-flash 等）后端要求
-      // maas_type: benefit 头参与 SDK-HMAC-SHA256 签名，否则返回
-      // InferHub.002002009.404 "model is not registered"。
-      //
-      // 判定必须是**动态**的：早期只硬编码 glm-5.3-flash 一个模型，导致
-      // deepseek-v4.1-flash 等其它 benefit 模型调用失败（用户报障：
-      // 发消息后报 Insufficient Balance / QUOTA —— 缺该头时后端按非 benefit
-      // 通道处理该模型）。实证见 CODEARTS_BENEFIT_FALLBACK 注释。
+      // benefit（免费额度）模型后端要求 `maas_type: benefit` 头参与
+      // SDK-HMAC-SHA256 签名，否则返回
+      // InferHub.002002009.404 "The model is not registered"。
+      // 该头必须进入 canonical request 与 SignedHeaders，故走 extraSignedHeaders。
       const extraSignedHeaders = isBenefitModel ? { maas_type: 'benefit' } : undefined
       const signed = await signRequestHuawei(
         credential.access_key_id,
@@ -1013,8 +1057,24 @@ export class CodeArtsAdapter extends LlmAdapter {
           yield* this.consumeSse(response, options)
           break
         } catch (error) {
-          if (!(error instanceof SseQueueRetryError)) throw error
-          // 落入下方排队重试
+          if (error instanceof SseQueueRetryError) {
+            // 落入下方排队重试
+          } else if (!benefitAdded && !isBenefitModel && isModelNotRegisteredError(errorMessage(error))) {
+            // 该模型需要 benefit 头：补上并学习，重发一次。
+            benefitAdded = true
+            isBenefitModel = true
+            rememberBenefitModel(options.model)
+            continue
+          } else if (!benefitRemoved && isBenefitModel && isBenefitNotFoundError(errorMessage(error))) {
+            // 带该头反而被拒 ⇒ 此前的学习记录已过时，撤销后重发一次。
+            // （当前服务端对所有模型都这样，故这条是常态路径而非异常路径。）
+            benefitRemoved = true
+            isBenefitModel = false
+            forgetBenefitModel(options.model)
+            continue
+          } else {
+            throw error
+          }
         }
       } else {
         const errorText = await response.text().catch(() => '')
@@ -1028,6 +1088,19 @@ export class CodeArtsAdapter extends LlmAdapter {
           if (credential === undefined || !credential.access_key_id || !credential.secret_access_key || !credential.security_token) {
             throw new LlmError('codearts: credential missing after refresh; log in again', 'MISSING_CREDENTIAL')
           }
+          continue
+        }
+        // 与 SSE 分支同一套自适应（服务端也可能以 4xx 下发这两个错误）。
+        if (!benefitAdded && !isBenefitModel && isModelNotRegisteredError(errorText)) {
+          benefitAdded = true
+          isBenefitModel = true
+          rememberBenefitModel(options.model)
+          continue
+        }
+        if (!benefitRemoved && isBenefitModel && isBenefitNotFoundError(errorText)) {
+          benefitRemoved = true
+          isBenefitModel = false
+          forgetBenefitModel(options.model)
           continue
         }
         // 限流处理：记录当前账号在该模型上的重置时间，然后切换账号重试

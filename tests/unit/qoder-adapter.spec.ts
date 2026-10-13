@@ -10,6 +10,7 @@ import {
   qoderQueueDelayMs,
 } from '../../src/qoder-adapter.js'
 import { QODER, QODER_CN } from '../../src/qoder-product.js'
+import { ALL_MODELS_RATE_LIMIT_KEY } from '../../src/account-pool.js'
 import { buildQoderCredential, parseQoderTokenPayload, type QoderCredential } from '../../src/qoder.js'
 
 /** 源码级断言的路径基准（与 `jet-hub-rpc.spec.ts` 同款）。 */
@@ -1140,7 +1141,7 @@ describe('QoderAdapter 排队错误（10605 model_queued）', () => {
       return { pool, marks, picks }
     }
 
-    it('额度受限：标记当前账号该模型到 UTC+8 当日 24:00，并切到下一个账号', async () => {
+    it('额度受限：标记当前账号**全部模型**到 UTC+8 当日 24:00，并切到下一个账号', async () => {
       const { pool, marks, picks } = makePoolStub([
         { id: 'acct-A', token: 'tokA' },
         { id: 'acct-B', token: 'tokB' },
@@ -1169,10 +1170,14 @@ describe('QoderAdapter 排队错误（10605 model_queued）', () => {
         currentAccountId: () => 'acct-A',
       }), { model: 'qfmodel', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] })
 
-      // ① 标记了 acct-A 的 qfmodel，时间落在未来（UTC+8 当日 24:00）
+      // ① 标记了 acct-A 的**整账号**（保留键），时间落在未来（UTC+8 当日 24:00）
+      //
+      // ⚠️ 必须是保留键而**不是** `'qfmodel'`（真实缺陷，用户报障 2026-10-10）：
+      // Qoder 的日额度实测按**账号**结算 —— 同一账号换 `dfmodel` / `qmodel_38max`
+      // 照样被 code 110 拒。只标单模型时，用户换模型后池又选中该账号、立刻再撞墙。
       expect(marks.length, '应标记一次额度受限').toBe(1)
       expect(marks[0].accountId).toBe('acct-A')
-      expect(marks[0].modelId).toBe('qfmodel')
+      expect(marks[0].modelId).toBe(ALL_MODELS_RATE_LIMIT_KEY)
       expect(marks[0].resetAtMs).toBeGreaterThan(Date.now())
 
       // ② 取号时**传了 tried**（含刚失败的 acct-A），否则会拿回同一个账号

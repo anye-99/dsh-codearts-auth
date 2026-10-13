@@ -1,5 +1,8 @@
 import { LlmError } from '@deepseek-ai/dsh-llm'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import {
   CHAT_API_BASE,
@@ -9,6 +12,25 @@ import {
 } from '../../src/llm-adapter.js'
 import { setBenefitMemoryCache } from '../../src/models.js'
 import type { CodeArtsCredential } from '../../src/types.js'
+
+/**
+ * ⚠️ 隔离 benefit 缓存目录：自适应用例会调 `rememberBenefitModel` /
+ * `forgetBenefitModel`，它们**写盘**。不隔离就会把测试用的假模型名
+ * 写进用户真实缓存（`~/.cache/deveco/codearts_benefit_models.json`）。
+ */
+let benefitCacheDir: string
+const originalCacheDir = process.env.DSH_CODEARTS_CACHE_DIR
+
+beforeAll(() => {
+  benefitCacheDir = mkdtempSync(join(tmpdir(), 'codearts-adapter-'))
+  process.env.DSH_CODEARTS_CACHE_DIR = benefitCacheDir
+})
+
+afterAll(() => {
+  if (originalCacheDir === undefined) delete process.env.DSH_CODEARTS_CACHE_DIR
+  else process.env.DSH_CODEARTS_CACHE_DIR = originalCacheDir
+  rmSync(benefitCacheDir, { recursive: true, force: true })
+})
 
 const CREDENTIAL_REF = credentialRef('CODEARTS_ACCESS_TOKEN')
 
@@ -103,15 +125,16 @@ describe('CodeArtsAdapter', () => {
   })
 
   it('resolveModel discloses contextWindow for GLM-5.2 and deepseek-v4 models', async () => {
-    // GLM-5.2：202752；glm-5.3-flash：1048576（1M，对齐 deveco-code-rust 90aeb17d）；
-    // deepseek-v4-flash/pro：1048576（1M）；deepseek-v4.1-flash：1000000
-    // （对齐 IDE 下发的 inferhub-provider 模型配置，2026-09 kernel 日志）。
+    // GLM-5.2：202752；deepseek-v4-flash/pro：1048576（1M）；
+    // deepseek-v4.1-flash：1000000（对齐 IDE 下发的 inferhub-provider 模型配置，
+    // 2026-09 kernel 日志）。
     // 其余模型（GLM-5.1/GLM-5/openpangu-*）未公开容量，context 应为 undefined。
+    //
+    // ⚠️ glm-5.3-flash 的 1M 条目已随该模型退役一并移除（2026-10-09）：
+    // 服务端不再注册它，故这里不再断言它的窗口。
     const adapter = makeAdapter()
     const glm52 = await adapter.resolveModel('codearts', 'GLM-5.2')
     expect(glm52.context).toEqual({ contextWindow: 202752 })
-    const glm53flash = await adapter.resolveModel('codearts', 'glm-5.3-flash')
-    expect(glm53flash.context).toEqual({ contextWindow: 1_048_576 })
     const dsFlash = await adapter.resolveModel('codearts', 'deepseek-v4-flash')
     expect(dsFlash.context).toEqual({ contextWindow: 1048576 })
     const dsPro = await adapter.resolveModel('codearts', 'deepseek-v4-pro')
@@ -240,60 +263,24 @@ describe('CodeArtsAdapter', () => {
     expect(texts).toEqual(['ok'])
   })
 
-  it('listModels advertises glm-5.3-flash with the GLM family', async () => {
-    // 对齐 deveco-code-rust 90aeb17d：CodeArts Agent 后端新增 GLM-5.3 Flash
-    // （benefit 免费额度模型，后端注册 id 为全小写 glm-5.3-flash）。
+  it('listModels 不再广告已退役的 glm-5.3-flash', async () => {
+    // glm-5.3-flash 于 2026-10-09 实测退役：服务端模型目录不再下发它，
+    // 且不带 maas_type → 404 not registered、带上 → 4004.200 benefit not found，
+    // 两种形态都失败。留在菜单里只会让用户选到一个必然报错的模型。
     const models = await makeAdapter().listModels('codearts')
-    expect(models.map((model) => model.id)).toContain('glm-5.3-flash')
-    // 默认模型仍是 GLM-5.2（新增模型不应改变默认模型）。
+    expect(models.map((model) => model.id)).not.toContain('glm-5.3-flash')
+    // 默认模型仍是 GLM-5.2（移除退役模型不应改变默认模型）。
     expect(models[0]!.id).toBe('GLM-5.2')
   })
 
-  it('signs glm-5.3-flash requests with the maas_type: benefit header', async () => {
-    // glm-5.3-flash 是 benefit（免费额度）模型：maas_type: benefit 必须
-    // 参与 SDK-HMAC-SHA256 签名并随请求发送，否则后端返回
-    // InferHub.002002009.404 "model is not registered"。
-    // （逆向自 CodeArts Agent IDE mitmproxy 抓包，对齐 deveco-code-rust 90aeb17d。）
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers)
-      expect(headers.get('maas_type')).toBe('benefit')
-      const auth = headers.get('Authorization') ?? ''
-      expect(auth).toContain('maas_type')
-      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
-    })
-    const adapter = makeAdapter({ fetchImpl })
-    const texts: string[] = []
-    for await (const chunk of adapter.stream({ ...streamOptions, model: 'glm-5.3-flash' } as never)) {
-      if (chunk.type === 'text-delta') texts.push(chunk.text)
-    }
-    expect(texts).toEqual(['ok'])
-  })
-
-  it('does not send maas_type for other models', async () => {
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers)
-      expect(headers.get('maas_type')).toBeNull()
-      return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
-    })
-    const adapter = makeAdapter({ fetchImpl })
-    for await (const _ of adapter.stream(streamOptions)) { /* drain */ }
-    expect(fetchImpl).toHaveBeenCalled()
-  })
-
-  it('signs deepseek-v4.1-flash with maas_type: benefit（真实缺陷回归）', async () => {
-    // 真实缺陷（用户报障，2026-09-23）：deepseek-v4.1-flash 是 benefit 模型，
-    // 必须带 maas_type: benefit，而早期实现把该集合硬编码为只有 glm-5.3-flash
-    // → 发消息后调用失败（实测不带该头返回 InferHub.002002009.404
-    // "The model is not registered"，带上即成功）。
-    // 对齐 deveco-code-rust fb1b4a2 的动态判定。
-    setBenefitMemoryCache([]) // 隔离磁盘缓存，只走静态兜底集合
+  it('默认不带 maas_type —— 服务端当前对所有模型带该头都会 benefit not found', async () => {
+    // 2026-10-09 实测：带上 maas_type: benefit 时，连 GLM-5.2 / kimi-k2.6-vl
+    // 这些非 benefit 模型都会回 InferHub.4004.200 benefit not found；
+    // 默认不带时它们全部可用。故默认值必须是「不带」。
+    setBenefitMemoryCache([]) // 隔离磁盘缓存，模拟「没有任何学习记录」
     try {
       const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const headers = new Headers(init?.headers)
-        expect(headers.get('maas_type')).toBe('benefit')
-        // 必须参与 SDK-HMAC-SHA256 签名（出现在 SignedHeaders 中），
-        // 否则服务端验签失败。
-        expect(headers.get('Authorization') ?? '').toContain('maas_type')
+        expect(new Headers(init?.headers).get('maas_type')).toBeNull()
         return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
       })
       const adapter = makeAdapter({ fetchImpl })
@@ -307,10 +294,97 @@ describe('CodeArtsAdapter', () => {
     }
   })
 
+  it('自适应：服务端回 not registered 时补上 benefit 头重试并学习', async () => {
+    // 这是「benefit 模型」的**唯一**可信判据 —— 不从任何清单推断。
+    setBenefitMemoryCache([])
+    try {
+      const seen: Array<string | null> = []
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const headers = new Headers(init?.headers)
+        const maas = headers.get('maas_type')
+        seen.push(maas)
+        if (maas === null) {
+          // 第一次：不带 → 服务端要求补 benefit 头
+          return new Response(
+            'data:{"error_code":"InferHub.002002009.404","error_msg":"The model is not registered, please request other model"}\n\n',
+            { status: 200 },
+          )
+        }
+        // 第二次：带上 → 成功。该头必须参与签名（出现在 SignedHeaders 里）。
+        expect(headers.get('Authorization') ?? '').toContain('maas_type')
+        return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
+      })
+      const adapter = makeAdapter({ fetchImpl })
+      const texts: string[] = []
+      for await (const chunk of adapter.stream({ ...streamOptions, model: 'brand-new-benefit' } as never)) {
+        if (chunk.type === 'text-delta') texts.push(chunk.text)
+      }
+      expect(texts).toEqual(['ok'])
+      expect(seen).toEqual([null, 'benefit'])
+    } finally {
+      setBenefitMemoryCache(undefined)
+    }
+  })
+
+  it('自适应：带着 benefit 头却回 benefit not found 时撤销学习并重试', async () => {
+    // 真实缺陷（用户报障，2026-10-09「codearts 的模型用不了」）：
+    // 旧实现把 deepseek-v4.1-flash 判为 benefit（来自过时的静态兜底表 +
+    // gateway/config 清单），于是给它带上 maas_type —— 而服务端现在对该头
+    // 一律回 benefit not found，导致**本可正常使用**的模型被插件自己打死。
+    setBenefitMemoryCache(['deepseek-v4.1-flash']) // 模拟过时的学习记录
+    try {
+      const seen: Array<string | null> = []
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const maas = new Headers(init?.headers).get('maas_type')
+        seen.push(maas)
+        if (maas !== null) {
+          return new Response(
+            'data:{"error_code":"InferHub.4004.200","error_msg":"benefit not found"}\n\n',
+            { status: 200 },
+          )
+        }
+        return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 })
+      })
+      const adapter = makeAdapter({ fetchImpl })
+      const texts: string[] = []
+      for await (const chunk of adapter.stream({ ...streamOptions, model: 'deepseek-v4.1-flash' } as never)) {
+        if (chunk.type === 'text-delta') texts.push(chunk.text)
+      }
+      expect(texts).toEqual(['ok'])
+      // 先带（命中过时记录）→ 被拒 → 去掉后成功
+      expect(seen).toEqual(['benefit', null])
+    } finally {
+      setBenefitMemoryCache(undefined)
+    }
+  })
+
+  it('自适应不会来回翻转：两个方向各只纠偏一次', async () => {
+    // `not registered` 与 `benefit not found` 互为反面，若不加限制会无限重试。
+    setBenefitMemoryCache([])
+    try {
+      let calls = 0
+      const fetchImpl = vi.fn(async () => {
+        calls += 1
+        // 永远回 not registered —— 补上 benefit 头后依然如此（服务端故障场景）
+        return new Response(
+          'data:{"error_code":"InferHub.002002009.404","error_msg":"The model is not registered"}\n\n',
+          { status: 200 },
+        )
+      })
+      const adapter = makeAdapter({ fetchImpl })
+      await expect(async () => {
+        for await (const _ of adapter.stream({ ...streamOptions, model: 'always-fails' } as never)) { /* drain */ }
+      }).rejects.toThrow(/not registered/i)
+      // 最多两次：首次不带 + 补头重试一次；不得继续重试。
+      expect(calls).toBe(2)
+    } finally {
+      setBenefitMemoryCache(undefined)
+    }
+  })
+
   it('does not send maas_type for the suffix-less deepseek-v4-flash', async () => {
-    // 无后缀 deepseek-v4-flash 是**非 benefit** 模型（带 maas_type 反而
-    // `unsupported model`）；它是 gateway 的 -0731 形态经归一化后的 id，
-    // 而 -0731 才是 benefit —— 两者是后端上不同的模型，不能混为一谈。
+    // 无后缀 deepseek-v4-flash 是非 benefit 模型；带 maas_type 会被服务端
+    // 回 benefit not found（2026-10-09 实测）。它必须走「不带」这条路径。
     setBenefitMemoryCache([])
     try {
       const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

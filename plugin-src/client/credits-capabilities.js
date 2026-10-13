@@ -149,6 +149,26 @@ export const CREDITS_CAPABILITIES = Object.freeze({
   //   ⚠️ 幂等判据是响应体的 `claim_result`（`1`=真领取、`2`=已领过），
   //   **不是 HTTP 状态码**（重复领取同样返回 200）。
   minimax: Object.freeze({ balance: true, dailyCheckin: true }),
+  // TeleAgent（星辰超级智能体，中国电信天翼 AI）：**余额与每日签到都有**。
+  //
+  // ⚠️⚠️ **这里曾登记为 `false`，那是错的** —— 由用户 2026-10-07 的客户端截图
+  //（积分余额 6100.00 / 每日可领 100 / 已领 2 天 / 累计 200 / 今日已领）推翻，
+  // 随后按「从 UI 组件反向追数据来源」的方式解出了三个端点：
+  //
+  // - **余额**：`GET /user/portal/companyStore/userCenter` → `current_points_balance`
+  // - **签到面板**：`GET /user/portal/companyStore/v2/checkDayTask`
+  //   → `daily_task.{daily_claimable_points,total_claim_days,total_claimed_points,claimed_today}`
+  // - **领取**：`GET /user/portal/companyStore/checkTask?type=daily_login`（**是 GET**）
+  //
+  // **第一版为什么漏掉（教训，值得记住）**：我按 `/api/` 与
+  // `credit|point|signin|checkin` 等**英文关键词**搜 asar，而这两个端点路径是
+  // `user/portal/companyStore/…`（**不含其中任何一个词**），字段名又全是
+  // `daily_claimable_points` 这种**业务自定义**命名
+  // ⇒ **关键词搜索对「业务域词汇」必然漏检**，且漏了还会得到一个「看起来很确定」
+  // 的否定结论。正确姿势是「**先在 renderer 里搜界面文案的 i18n key**
+  //（如 `settings.benefit.pointBalance`），再顺藤找它消费的字段名、
+  // 以及产出该字段的 `Rn(ot.XXX)` 调用」—— 别再用关键词碰运气。
+  teleagent: Object.freeze({ balance: true, dailyCheckin: true }),
   /**
    * ZCode（智谱）：余额与每日领取**都有**。
    *
@@ -165,6 +185,31 @@ export const CREDITS_CAPABILITIES = Object.freeze({
    * `src/zcode-auth.ts` 的 `claimDaily`）。
    */
   zcode: Object.freeze({ balance: true, dailyCheckin: true }),
+  /**
+   * Step Code（阶跃星辰）：**首版两项都登记为 `false`（未探明，不是「实测没有」）。**
+   *
+   * 取证边界（2026-10-09，官方发行包 `step-0.1.3-windows-x64.zip` 的
+   * `step.exe` 内嵌 bundle 全量检索）：
+   *
+   * - 登录 API 的前缀 `/api/stdhttp/v1/cli-login` 在整个 bundle 里**只有**
+   *   `/init` 与 `/poll/{flow_id}` 两个端点，**没有任何** usage / quota /
+   *   balance / subscription 端点；
+   * - 同包 `docs/step-integration.md` 的兼容性矩阵把 `/status`
+   *   （承载额度展示的入口）明确标为 **"not yet ported"** —— 官方 CLI
+   *   **自己都还没有**额度面板；
+   * - Step Plan 是**订阅制**（Mini / Plus / Pro / Max，额度含在套餐内），
+   *   不是「每日签到领积分」那套 —— 与 qoder / zcode 的积分体系不同源。
+   *
+   * ⇒ 按「默认关闭」的既定约定登记 `false`（未登记的 provider 视为两项全无）。
+   *
+   * ⚠️⚠️ **这是「未探明」，不是「不存在」** —— AGENTS.md 在 teleagent 上记过
+   * 同型的**结论修正**：初版按英文关键词搜不到就登记 `false`，随后被用户的
+   * 客户端截图直接推翻（真实端点路径是 `user/portal/companyStore/…`，
+   * **不含** `credit|point|signin|checkin` 任何一个词）。
+   * ⇒ 若用户后续提供 Step Plan 用量页面的截图/抓包，**先按截图字段反查端点**，
+   * 不要再用关键词碰运气。
+   */
+  stepcode: Object.freeze({ balance: false, dailyCheckin: false }),
   antigravity: Object.freeze({ balance: false, dailyCheckin: false, subscriptionQuota: true }),
 });
 

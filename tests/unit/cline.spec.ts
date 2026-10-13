@@ -43,16 +43,16 @@ describe('Cline 产品配置', () => {
     expect(CLINE.defaultCredentialRef).toBe('CLINE_ACCESS_TOKEN')
   })
 
-  it('兜底表含远端 free 数组的全部 5 个免费模型', () => {
-    // 远端 `recommended-models` 的 free 数组实测（2026-09-25）正是这 5 个，
-    // 也正好是用户截图里的清单。
+  it('兜底表含远端 free 数组的全部 4 个免费模型', () => {
+    // 远端 `recommended-models` 的 free 数组实测（2026-10-09）正是这 4 个。
+    // ⚠️ 旧的 space-bunny-alpha / deepseek-v4.1-flash / gemini-3.8-flash
+    // 已实测下线（404 / 上游无端点），见 src/cline-product.ts 的注释。
     const freeIds = CLINE.fallbackModels.filter((m) => m.isFree === true).map((m) => m.id)
     expect(freeIds.sort()).toEqual([
-      'cline-free/deepseek-v4.1-flash',
-      'cline-free/gemini-3.8-flash',
       'cline-free/mimo-v2.6-flash',
       'cline-free/muse-spark-1.3-contributor',
-      'stealth/space-bunny-alpha',
+      'cline-free/solar-mini4',
+      'cline-free/step-5-preview',
     ].sort())
   })
 
@@ -62,12 +62,16 @@ describe('Cline 产品配置', () => {
   })
 
   it('免费模型是独立 id，付费同名模型不在兜底表里被标为免费', () => {
-    // ⚠️ 核心不变式：`cline-free/deepseek-v4.1-flash`（免费）与
-    // `deepseek/deepseek-v4.1-flash`（按量计费）是两个不同条目。
+    // ⚠️ 核心不变式：`cline-free/mimo-v2.6-flash`（免费）与
+    // `xiaomi/mimo-v2.6-flash`（按量计费）是两个不同条目。
     // 兜底表只声明前者，绝不能把后者也标成免费。
     const byId = new Map(CLINE.fallbackModels.map((m) => [m.id, m]))
-    expect(byId.get('cline-free/deepseek-v4.1-flash')?.isFree).toBe(true)
-    expect(byId.has('deepseek/deepseek-v4.1-flash')).toBe(false)
+    expect(byId.get('cline-free/mimo-v2.6-flash')?.isFree).toBe(true)
+    expect(byId.has('xiaomi/mimo-v2.6-flash')).toBe(false)
+    // 已下线的旧免费 id 不得再出现在兜底表里（否则会被播报为「免费」却必然 404）。
+    expect(byId.has('cline-free/deepseek-v4.1-flash')).toBe(false)
+    expect(byId.has('cline-free/gemini-3.8-flash')).toBe(false)
+    expect(byId.has('stealth/space-bunny-alpha')).toBe(false)
   })
 
   it('productById 只认 cline', () => {

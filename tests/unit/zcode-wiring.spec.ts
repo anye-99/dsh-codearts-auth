@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { ZcodeAuth } from '../../src/zcode-auth.js'
 import { ZCODE } from '../../src/zcode-product.js'
+import { claimAllImplementation } from './jet-hub-rpc-source.js'
 import { AccountPool } from '../../src/account-pool.js'
 import { CREDITS_CAPABILITIES } from '../../plugin-src/client/credits-capabilities.js'
 
@@ -360,9 +361,18 @@ describe('ZCode 客户端接入（缺口 3 / 4 / 5）', () => {
     // ⚠️ 2026-10-05 **移除 doubao**（用户要求整面板下线）—— 14 → 13。
     //    它曾与 antigravity 同属「出现在导航、但不按账号池恢复」那一类；
     //    移除后**唯一**剩下的那类面板是 antigravity。
+    // ⚠️ 2026-10-07 接入 teleagent（星辰超级智能体，中国电信天翼 AI，
+    //    **凭据型**）—— 13 → 14。它与 minimax/zcode 一样进 `REF_PREFIX_TO_PROVIDER`
+    //    （凭据由本插件持有、可按账号池恢复），且三处顺序对齐：
+    //    客户端 PROVIDERS = store 表 = `registerJetHubRpc` 形参，
+    //    都排在 minimax 之后、zcode 之前。
+    // ⚠️ 2026-10-09 接入 stepcode（阶跃星辰，**凭据型**）—— 14 → 15。
+    //    它与 minimax/zcode/teleagent 同类：凭据由本插件持有（静态 api_key）、
+    //    进 `REF_PREFIX_TO_PROVIDER`、走 account.* 标准端点，三处顺序对齐为
+    //    「排在 zcode 之后、antigravity 之前」（antigravity 恒为最后一个）。
     //    这条计数断言是**故意**的：面板增删都必须同时改它，逼着改的人回来确认
     //    「这个面板到底该不该出现在左侧导航」——与 `REF_PREFIX_TO_PROVIDER` 成对。
-    expect(ids).toHaveLength(13)
+    expect(ids).toHaveLength(15)
     expect(ids).toContain('antigravity')
   })
 
@@ -423,9 +433,14 @@ describe('ZCode RPC 分派（缺口 2：接线）', () => {
 
   it('★ credits.balances 与 credits.claimAll 都接了 zcode', () => {
     const source = readRpc()
-    // 两处都应有 zcode 分派。
-    const matches = [...source.matchAll(/req\.provider === ZCODE\.id/g)]
-    expect(matches.length).toBeGreaterThanOrEqual(2)
+    // credits.balances 仍按 `req.provider === ZCODE.id` 分派。
+    expect(source).toMatch(/req\.provider === ZCODE\.id/)
+    // ⚠️ credits.claimAll 的实现自 2026-10-13 起抽到模块级
+    // `claimAllForProvider()`（每日自动签到与 RPC 共用同一份），
+    // 故断言锚定那个函数体而不是 case 切片（见 `jet-hub-rpc-source.ts`）。
+    const impl = claimAllImplementation(source)
+    expect(impl).toMatch(/case ZCODE\.id:/)
+    expect(impl).toMatch(/claimDailyFor/)
   })
 
   it('★ 签到路径为**每个 plan 单独 mint** captcha（captcha 一次性）', () => {

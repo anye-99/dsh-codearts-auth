@@ -137,7 +137,13 @@ function makeRpc() {
     {} as never, // loomy
     {} as never, // raccoon
     {} as never, // minimax（2026-09-30 合并后新增，插在 zcode 前）
+    {} as never, // teleagent（2026-10-07 新增，插在 minimax 与 zcode 之间）
     zcode as never,
+    // ⚠️ stepcode 必须**显式占位**：签名里它排在 zcode 之后、antigravity 之前。
+    // 漏补会让下面这个 `undefined` 落到 stepcode 槽位、antigravity 也变 undefined ——
+    // 两者都"恰好"是 undefined 所以不报错，但**任何**将来给 stepcode 传真值的
+    // 用例都会静默错位。
+    {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
     undefined,
   )
   const h = handler()
@@ -359,7 +365,10 @@ describe('ZCode Jet Hub 登录接入', () => {
       {} as never, {} as never, {} as never, {} as never, {} as never,
       {} as never, {} as never, {} as never, {} as never, {} as never,
       {} as never, // minimax（合并后插在 zcode 前）
-      zcode as never, undefined,
+      {} as never, // teleagent（2026-10-07 新增，插在 minimax 与 zcode 之间）
+      zcode as never,
+      {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
+      undefined,
     )
     const h = handler()!
     const call = async (method: string, payload: unknown) => {
@@ -386,7 +395,7 @@ describe('ZCode Jet Hub 登录接入', () => {
     expect(bogus.error?.message).toMatch(/unknown provider/)
   })
 
-  it('位置参数顺序：zcode 必须排在 raccoon 之后（缺一个就错位）', () => {
+  it('位置参数顺序：zcode 必须排在 teleagent / minimax 之后（缺一个就错位）', () => {
     // 源码级断言：防止将来加 provider 时把 zcode 的顺序改乱。
     const source = readFileSync(
       resolve(dirname(fileURLToPath(import.meta.url)), '../../src/index.ts'),
@@ -401,14 +410,21 @@ describe('ZCode Jet Hub 登录接入', () => {
     // ⚠️ 2026-10-02 移除 vibex 面板后由 17 → 16（少一个实参位）。
     // ⚠️ 2026-10-04 追加 doubaoService（doubao 面板的宿主侧服务）→ 17。
     // ⚠️ 2026-10-05 移除 doubao 面板 → 17 → 16（尾参回到 modelAdapters）。
-    // 计数口径：`ctx` + `pool` + 12 个 auth 实例 + `agyService` + `modelAdapters`
-    // —— 增删面板/服务位时这里与上面的索引偏移必须**同时**改。
-    expect(args.length).toBe(16)
-    expect(args[args.length - 6]).toBe('loomy')
-    expect(args[args.length - 5]).toBe('raccoon')
-    expect(args[args.length - 4]).toBe('minimax')
-    expect(args[args.length - 3]).toBe('zcode')
-    expect(args[args.length - 2]).toBe('agyService')
-    expect(args[args.length - 1]).toBe('modelAdapters')
+    // ⚠️ 2026-10-07 接入 teleagent（插在 minimax 与 zcode 之间）→ 16 → 17。
+    // ⚠️ 2026-10-09 接入 stepcode（插在 zcode 与 antigravity 之间）→ 17 → 18。
+    // ⚠️ 2026-10-13 追加 autoCheckin（每日自动签到的装配层）→ 18 → 19。
+    // 计数口径：`ctx` + `pool` + 14 个 auth 实例 + `agyService` + `modelAdapters`
+    // + `autoCheckin` —— 增删面板/服务位时这里与下面的索引偏移必须**同时**改。
+    expect(args.length).toBe(19)
+    expect(args[args.length - 9]).toBe('loomy')
+    expect(args[args.length - 8]).toBe('raccoon')
+    expect(args[args.length - 7]).toBe('minimax')
+    expect(args[args.length - 6]).toBe('teleagent')
+    expect(args[args.length - 5]).toBe('zcode')
+    expect(args[args.length - 4]).toBe('stepcode')
+    expect(args[args.length - 3]).toBe('agyService')
+    expect(args[args.length - 2]).toBe('modelAdapters')
+    // 新尾参：追加在**末尾**（不动前面任何槽位）正是为了不触发位置参数错位。
+    expect(args[args.length - 1]).toBe('autoCheckin')
   })
 })

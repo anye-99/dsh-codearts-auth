@@ -196,7 +196,7 @@ export interface RaccoonProduct {
 /**
  * 兜底模型目录（6 个 `visible:true` 模型）。
  *
- * 来源：2026-09-26 实测 `GET /api/web/llm/v2/model_catalog`。
+ * 来源：2026-10-09 实测 `GET /api/web/llm/v2/model_catalog`（id 集合与顺序均未变）。
  * 顺序**照抄远端返回顺序**，不重排 —— 重排会让「与远端对比」这类排查失去可比性。
  *
  * ⚠️ 展示名由 `raccoonDisplayName` 的输出形态固化（` · x倍率` / ` · 免费` /
@@ -208,8 +208,23 @@ export interface RaccoonProduct {
  * | `sn-sensenova-6-8-flash-lite` | 0.5 | 0 | 免费 |
  * | `sn-glm-5-3` | 0.75 | 0.75 | x0.75 |
  * | `sn-kimi-k3` | 1 | 1 | x1 |
- * | `sn-glm-5-3-flash` | 0.2 | 0.1 | x0.2→x0.1 |
+ * | `sn-glm-5-3-flash` | 0.2 | **0.2** | x0.2 |
  * | `sn-deepseek-v4-1-flash` | 0.25 | 0.25 | x0.25 |
+ *
+ * ⚠️ **`sn-glm-5-3-flash` 的折后价已消失**（2026-10-09 实测）：旧值展示
+ * `x0.2→x0.1`，现为 `x0.2`。**判定为「上游不再下发」而非「我们解析写错」**，
+ * 四条判据（复核脚本 `scripts/probe-loomy-raccoon-catalog.mjs`）：
+ * 1. 两个字段**都下发了**且值均为 `0.2`（不是 `undefined`、不是字符串）；
+ * 2. 同一段解析对 `sn-sensenova-*` 仍正确判出「免费」（`base=0.5 / effective=0`
+ *    被正确区分）⇒ 解析未损坏；
+ * 3. 上游自己的折扣明细 `billing_discounts` 已为 **空数组**、`billing_status`
+ *    回到 `normal`（对照限免模型有一条 `active:true` 的 discount）⇒ 折扣被
+ *    **整体移除**，不是「存在但不在时段内」，故我们无从推算折后价；
+ * 4. 5 次采样计费快照只有 1 种，非抖动。
+ *
+ * ⇒ `raccoonDisplayName` 的箭头分支要求 `base > effective` 严格成立，
+ * `0.2 > 0.2` 为 false，正确落到 `x生效价` 分支。**修的是数据，不是逻辑**
+ * —— `tests/unit/raccoon.spec.ts` 里「有折扣时显示箭头」的用例必须保留。
  *
  * ⚠️ **不含** `Raccoon-Auto`：它是客户端 i18n 条目（`modelPicker.auto`）渲染的
  * 「自动选模」入口，不是远端模型 —— 直接发给 `chat/completions` 会 404。
@@ -248,7 +263,9 @@ const RACCOON_FALLBACK_MODELS: readonly RaccoonFallbackModel[] = [
   },
   {
     id: 'sn-glm-5-3-flash',
-    name: 'GLM-5-3-Flash · x0.2→x0.1',
+    // ⚠️ 2026-10-09：上游已移除该模型的折扣（billing_discounts 为空），
+    // 生效价 = 原价 = 0.2，故不再显示箭头（见上方四条判据）。
+    name: 'GLM-5-3-Flash · x0.2',
     contextWindow: 1_000_000,
     maxTokens: 100_000,
     supportsImage: false,

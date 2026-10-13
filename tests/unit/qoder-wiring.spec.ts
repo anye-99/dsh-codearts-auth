@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { claimAllImplementation } from './jet-hub-rpc-source.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const read = (p: string): string => readFileSync(resolve(here, p), 'utf8')
@@ -118,12 +119,12 @@ describe('Qoder Jet Hub RPC 分支（src/jet-hub-rpc.ts）', () => {
     //   POST /sash/api/v1/me/campaigns/{campaignId}/claim   （body 空）
     // 幂等判据是响应体的 `replayed`（重复领取同样 HTTP 200）。
     const code = codeOnly(rpc)
-    const start = code.indexOf("case 'credits.claimAll'")
-    const end = code.indexOf("case 'credits.balances'")
-    expect(start).toBeGreaterThan(-1)
-    const branch = code.slice(start, end)
-    // 重构后按同族注册表判定。
-    expect(branch).toContain('isQoderFamily(req.provider)')
+    // ⚠️ 实现自 2026-10-13 起**不在** `case 'credits.claimAll'` 里：它被抽成
+    // 模块级 `claimAllForProvider()`（每日自动签到与 RPC 共用同一份），
+    // 故断言锚定那个函数体（见 `jet-hub-rpc-source.ts`）。
+    const branch = claimAllImplementation(code)
+    // 同族判定走模块级产品表（`qoderProductOf`）：两个站点共用一段实现。
+    expect(branch).toContain('qoderProductOf(provider)')
     expect(branch).toContain('claimQoderDailyCheckin')
     // Qoder 的领取流程自带活动列表查询 → 必须跳过外部预检，否则重复发一次 GET。
     expect(branch).toContain('precheckStatus: false')
@@ -245,19 +246,24 @@ describe('Qoder 同族 RPC 注册表（src/jet-hub-rpc.ts）', () => {
   })
 
   it('领取分支仍传 precheckStatus: false（流程自带活动查询）', () => {
-    const start = code.indexOf("case 'credits.claimAll'")
-    const end = code.indexOf("case 'credits.balances'")
-    const branch = code.slice(start, end)
-    expect(branch).toContain('isQoderFamily(req.provider)')
-    expect(branch).toContain('claimQoderDailyCheckin(credential, product)')
+    // ⚠️ 同前一条：锚点搬到模块级 `claimAllForProvider()`。
+    const branch = claimAllImplementation(code)
+    // 同族判定走模块级产品表，两个站点共用一段实现（`.auth` 只用于登录/续期）。
+    expect(branch).toContain('qoderProductOf(provider)')
+    expect(branch).toContain('claimQoderDailyCheckin(credential, qoderProduct)')
     expect(branch).toContain('precheckStatus: false')
     // ⚠️ 不能退化成只认国际版
     expect(branch).not.toContain('claimQoderDailyCheckin(credential, QODER)')
   })
 
   it('余额分支按 member.product 取配置', () => {
+    // ⚠️ 切片**必须以下一个 case 为界**，不能用定长 `start + N`：
+    // 2026-10-07 在 balances 里插入 teleagent 分支（在 Qoder 分支之前）
+    // 就把 Qoder 分支挤出了 3000 字符窗口，本用例**假失败**。
+    // 定长切片会随任何无关分支的插入而失效 —— 那是断言本身的问题，不是代码的。
     const start = code.indexOf("case 'credits.balances'")
-    const branch = code.slice(start, start + 3000)
+    const nextCase = code.indexOf("case '", start + "case 'credits.balances'".length)
+    const branch = code.slice(start, nextCase === -1 ? code.length : nextCase)
     expect(branch).toContain('isQoderFamily(req.provider)')
     expect(branch).toContain('fetchQoderCreditBalance(credential, product)')
   })

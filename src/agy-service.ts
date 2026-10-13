@@ -26,7 +26,7 @@ import { PoolAuthFlow, type PoolAuthStatus } from './agy/pool-auth.js'
 import { QuotaService } from './agy/quota.js'
 import { defaultPoolDir } from './agy/pool.js'
 import { compareVersions, MIN_AGY_VERSION, parseVersion, probeProcess, resolveAgyBin } from './agy/runner.js'
-import type { PluginConfig } from './agy/types.js'
+import { AGY_MODELS_SPAWN_TIMEOUT_MS, AGY_TOKEN_HEAL_COOLDOWN_MS, type PluginConfig } from './agy/types.js'
 import { defaultConfig } from './agy/types.js'
 import { AGY_EFFORTS, readAgySettings, writeAgySettings } from './agy/settings.js'
 
@@ -35,6 +35,8 @@ export class AntigravityService {
   private bin: string | null = null
   private version: string | null = null
   private dormantReason: string | null = null
+  /** 上次「探针判未登录 ⇒ 主动续期」的时刻（冷却用，见 `healPrimaryToken`）。 */
+  private lastHealAt = 0
 
   readonly pool: AccountPoolManager
   readonly auth: AuthHelper
@@ -88,7 +90,7 @@ export class AntigravityService {
     this.catalog = new ModelCatalog(
       async (signal) => {
         if (!this.bin) return { stdout: '', stderr: 'agy binary not found' }
-        const out = await probeProcess(this.bin, ['models'], 15_000, signal, process.env)
+        const out = await probeProcess(this.bin, ['models'], AGY_MODELS_SPAWN_TIMEOUT_MS, signal, process.env)
         return { stdout: out.stdout, stderr: out.stderrTail }
       },
       this.cfg.fallbackModels,
@@ -101,6 +103,54 @@ export class AntigravityService {
   get agyBin(): string | null { return this.bin }
   get agyVersion(): string | null { return this.version }
   get config(): PluginConfig { return this.cfg }
+
+  /**
+   * 登录门控用的探针：**判未登录时先试着续期一次，再重探**。
+   *
+   * ⚠️ 为什么必须自愈（2026-10-10 用户报障「模型列表没有 antigravity 的模型」，
+   * 本机 agy 1.3.2 实测）：**agy 二进制在 `models` 这条路径上不自己续期** ——
+   * 凭据管理器里的 access token 一过期，`agy models` 就直接报 `Please sign in`
+   * （实测过期态 21s 失败；把 token 续新后同一条命令 6–12s 返回 14 条）。
+   * 而本插件**有**续期能力（`QuotaService.getValidAccessToken`，用 refresh_token
+   * 打 Google token 端点，并写回凭据管理器 + 磁盘）。
+   *
+   * 原先两件事不同步：后台配额轮询每 15 分钟才续一次，探针却据「未登录」把
+   * 整个模型分组隐藏最长 15 分钟 —— 用户视角就是「明明登录过、模型列表却是空的」。
+   * 现在探针判 false 时立刻补一次续期并**强制重探**，把隐藏时长压到秒级。
+   *
+   * ⚠️ 续期成功 ≠ 一定翻 true：凭据真被吊销时 `getValidAccessToken` 会把账号标
+   * `authRequired`、重探仍 false，行为保持正确（不会把未登录谎报成已登录）。
+   */
+  async gateProbe(): Promise<boolean | null> {
+    const first = await this.auth.probeSignedIn()
+    if (first !== false) return first
+    const healed = await this.healPrimaryToken().catch(() => false)
+    if (!healed) return first
+    return this.auth.probeSignedIn(true)
+  }
+
+  /**
+   * 主动续期主账号的 agy access token（带冷却，见 `AGY_TOKEN_HEAL_COOLDOWN_MS`）。
+   *
+   * ⚠️ 判据是「凭据**确实变新了**」，不是「拿到了 token」：
+   * `QuotaService.getValidAccessToken` 在续期失败时**返回过期的旧 token**
+   * 而不是 null（它末尾是 `return tok.accessToken || null`）。若按「非 null」
+   * 就算 healed，网络抖动那次会白续一次、白重探一次（每次重探 = 一次
+   * 最长 30s 的 `agy models` spawn）。
+   * ⇒ 这里比较续期前后的 `expiryMs`，只有真的往后走了才值得重探。
+   */
+  async healPrimaryToken(): Promise<boolean> {
+    const now = Date.now()
+    if (now - this.lastHealAt < AGY_TOKEN_HEAL_COOLDOWN_MS) return false
+    this.lastHealAt = now
+    // ensurePrimaryAccount：主账号条目可能在运行期被外部写空（2026-10-02 实测），
+    // 这里自愈取回，别让续期因为「找不到 acc_primary」而静默失败。
+    const acc = this.pool.ensurePrimaryAccount()
+    const before = this.quota.getStoredToken(acc)?.expiryMs ?? 0
+    await this.quota.getValidAccessToken(acc).catch(() => null)
+    const after = this.quota.getStoredToken(acc)?.expiryMs ?? 0
+    return after > before && after > now
+  }
 
   /**
    * 设置「默认思考档位」（面板开关）。

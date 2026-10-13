@@ -68,7 +68,9 @@ suite('Raccoon 只读探针（不发模型请求、不领取奖励）', () => {
     expect(byId.get('sn-glm-5-3')?.name).toBe('GLM-5-3 · x0.75')
     // ⚠️ 1 倍也要显示（用户报障「为什么 Kimi-K3 没有倍率，ide 是 1 倍」）
     expect(byId.get('sn-kimi-k3')?.name).toBe('Kimi-K3 · x1')
-    expect(byId.get('sn-glm-5-3-flash')?.name).toBe('GLM-5-3-Flash · x0.2→x0.1')
+    // ⚠️ 2026-10-09：该模型的折扣已被上游移除（billing_discounts 为空），
+    // 生效价 = 原价 = 0.2，故不再有 `→x0.1`。判定依据见 src/raccoon-product.ts 的四条判据。
+    expect(byId.get('sn-glm-5-3-flash')?.name).toBe('GLM-5-3-Flash · x0.2')
     expect(byId.get('sn-deepseek-v4-1-flash')?.name).toBe('DeepSeek-V4.1-Flash · x0.25')
     expect(byId.get('sn-sensenova-6-8-flash')?.name).toBe('SenseNova-6.8-Flash · 免费')
   })

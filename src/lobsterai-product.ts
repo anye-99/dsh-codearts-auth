@@ -23,8 +23,10 @@
  *
  * - API 基址 / 版本号接口：`lobsterai2api/sigin.py:10-11`（实测可用）；
  * - 端点路径与请求头：`lobsterai2api/internal/upstream/client.go`；
- * - 兜底模型表：`lobsterai2api/internal/server/handler.go:94-114`
- *   （注释标明「2026-08-06 从 `GET /api/models/available` 实测拉取」）；
+ * - 兜底模型表：**2026-10-09 用真实凭据重采** `GET /api/models/available`
+ *   （30 条）。旧表是 `lobsterai2api/internal/server/handler.go:94-114` 的
+ *   19 条编译期快照（注释标称 2026-08-06），实测已严重过期 —— 详见
+ *   {@link LOBSTERAI_FALLBACK_MODELS} 的注释；
  * - portal 基址：本次实测确认（见下）。
  */
 
@@ -40,14 +42,17 @@
 export interface LobsteraiFallbackModel {
   /** 模型 ID（传给 `POST /api/proxy/v1/chat/completions` 的 `model`）。 */
   id: string
-  /** 展示名。 */
+  /** 展示名（2026-10-09 起改用**远端下发的 `modelName`**，不再是裸 id）。 */
   name: string
   /**
-   * 上下文窗口（**桥接层的估计值，非远端权威值**）。
+   * 上下文窗口。
    *
-   * `handler.go:94-114` 里 19 个模型全部标 `131072`，那是对齐
-   * `deepseek-v4` 系的取值后**统一填的**，并非逐个实测。
-   * 实测远端多数模型返回 `1000000`，故该估计值偏保守。
+   * ⚠️ **2026-10-09 起以远端权威值为准**（旧表统一填 131072，是桥接层的估值）。
+   * 远端 `GET /api/models/available` 会下发 `contextWindow`（实测 30 条里 21 条有值，
+   * 多数为 `1000000`）；未下发的那 9 条才沿用 131072 估值。
+   *
+   * 采信远端值的必要性见 `lobsterai-adapter.ts` 的 `contextWindowFor`：
+   * 用偏小的估值会让 DSH 在远未用满窗口时就触发上下文压缩。
    */
   contextWindow: number
 }
@@ -169,37 +174,68 @@ export interface LobsteraiProduct {
 }
 
 /**
- * 兜底模型目录（19 个）。
+ * 兜底模型目录（**30 个**，2026-10-09 按远端实测重采）。
  *
- * 来源：`lobsterai2api/internal/server/handler.go:94-114` 的 `staticModels`，
- * 注释标明「2026-08-06 从 `GET /api/models/available` 实测拉取」。
+ * ## 2026-10-09 全表更新
  *
- * 顺序**照抄原表**，不重排 —— 它是实测时的返回顺序，重排会让「与上游对比」
- * 这类排查工作失去可比性。
+ * 旧表是 19 条的编译期快照（抄自 `lobsterai2api` 桥接层的 `staticModels`，
+ * 注释标称 2026-08-06），实测已**严重过期**：远端 `GET /api/models/available`
+ * 现返回 **30 条**，其中 **12 条**是旧表完全没有的（`glm-5.3` 系、`qwen3.8` 系、
+ * `kimi-k3` / `kimi-k2.8-preview`、`deepseek-flash`、`deepseek-v4-flash-vision-exp`、
+ * `MiniMax-M3.1-Flash-Preview`、`doubao-seed-2-1-pro-260915`），
+ * 另有 **1 条**已被上游撤下（`doubao-seed-2-1-pro-260628` → 换成 `-260915`）。
  *
- * `contextWindow` 全部为 131072：这是桥接层统一填的值（见
- * {@link LobsteraiFallbackModel.contextWindow} 的说明），**不是**逐个实测结果。
+ * ⚠️ **兜底表过期是有实际后果的**：远端整体失败时（未登录、网络异常），
+ * 用户会看到一张**少了 12 个可用模型**、且含 1 个已撤下模型的列表。
+ *
+ * 顺序**照抄远端返回顺序**，不重排 —— 它是实测时的返回顺序，重排会让
+ * 「与上游对比」这类排查工作失去可比性。
+ *
+ * ## `contextWindow` 的取值口径（本次已按远端校正）
+ *
+ * 旧表**全部填 131072**，那是桥接层统一填的估值，**不是**逐个实测结果。
+ * 本次改为**以远端下发的 `contextWindow` 为准**（21 条有值，多数为 `1000000`），
+ * 仅远端未下发的那 9 条沿用 131072 估值并逐条标注。
+ *
+ * 采信远端值的必要性见 `lobsterai-adapter.ts` 的 `contextWindowFor`：
+ * 用估值会让 DSH 在远未用满窗口时就触发上下文压缩。
+ *
+ * ⚠️ 兜底表**不含 `costMultiplier`**（设计如此，见适配器 `staticFallbackModels`）：
+ * 它是编译期快照而价格会变，远端失败时宁可不显示倍率也不猜。
  */
 const LOBSTERAI_FALLBACK_MODELS: readonly LobsteraiFallbackModel[] = [
-  { id: 'deepseek-v4-flash', name: 'deepseek-v4-flash', contextWindow: 131_072 },
-  { id: 'deepseek-v4-pro', name: 'deepseek-v4-pro', contextWindow: 131_072 },
-  { id: 'MiniMax-M3', name: 'MiniMax-M3', contextWindow: 131_072 },
+  { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1_000_000 },
+  { id: 'glm-5.3-flashx', name: 'GLM-5.3-FlashX', contextWindow: 1_000_000 },
+  { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 1_000_000 },
+  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000 },
+  { id: 'MiniMax-M3.1-Flash-Preview', name: 'MiniMax-M3.1-Flash-Preview', contextWindow: 1_000_000 },
+  { id: 'MiniMax-M3', name: 'MiniMax-M3', contextWindow: 1_000_000 },
+  { id: 'qwen3.8-max', name: 'Qwen3.8-Max', contextWindow: 1_000_000 },
+  { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', contextWindow: 1_000_000 },
+  { id: 'qwen3.8-omni-flash', name: 'Qwen3.8-Omni-Flash', contextWindow: 1_000_000 },
+  { id: 'kimi-k3', name: 'Kimi-K3', contextWindow: 1_048_576 },
+  { id: 'kimi-k2.8-preview', name: 'Kimi-K2.8-Preview', contextWindow: 262_144 },
+  { id: 'kimi-k2.7-code', name: 'Kimi-K2.7-Code', contextWindow: 262_144 },
+  { id: 'doubao-seed-2-1-pro-260915', name: 'Doubao-Seed-2.1-Pro', contextWindow: 256_000 },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek-V4-Flash-Vision-Exp', contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek-V4-Flash', contextWindow: 1_000_000 },
+  // 以下 9 条远端**未下发** `contextWindow`，沿用桥接层的保守估值 131072。
   { id: 'MiniMax-M2.7', name: 'MiniMax-M2.7', contextWindow: 131_072 },
-  { id: 'qwen3.7-max', name: 'qwen3.7-max', contextWindow: 131_072 },
-  { id: 'qwen3.7-plus', name: 'qwen3.7-plus', contextWindow: 131_072 },
-  { id: 'qwen3.6-plus', name: 'qwen3.6-plus', contextWindow: 131_072 },
-  { id: 'qwen3.5-plus-2026-04-20', name: 'qwen3.5-plus-2026-04-20', contextWindow: 131_072 },
-  { id: 'kimi-k2.7-code', name: 'kimi-k2.7-code', contextWindow: 131_072 },
-  { id: 'kimi-k2.7-code-highspeed', name: 'kimi-k2.7-code-highspeed', contextWindow: 131_072 },
-  { id: 'kimi-k2.6', name: 'kimi-k2.6', contextWindow: 131_072 },
-  { id: 'kimi-k2.5', name: 'kimi-k2.5', contextWindow: 131_072 },
-  { id: 'doubao-seed-2-1-pro-260628', name: 'doubao-seed-2-1-pro-260628', contextWindow: 131_072 },
-  { id: 'doubao-seed-2-1-turbo-260628', name: 'doubao-seed-2-1-turbo-260628', contextWindow: 131_072 },
-  { id: 'doubao-seed-2-0-code-preview-260215', name: 'doubao-seed-2-0-code-preview-260215', contextWindow: 131_072 },
-  { id: 'glm-5.2', name: 'glm-5.2', contextWindow: 131_072 },
-  { id: 'glm-5.1', name: 'glm-5.1', contextWindow: 131_072 },
-  { id: 'glm-5v-turbo', name: 'glm-5v-turbo', contextWindow: 131_072 },
-  { id: 'glm-5', name: 'glm-5', contextWindow: 131_072 },
+  { id: 'qwen3.7-max', name: 'Qwen3.7-Max', contextWindow: 1_000_000 },
+  { id: 'qwen3.7-plus', name: 'Qwen3.7-Plus', contextWindow: 1_000_000 },
+  { id: 'qwen3.6-plus', name: 'Qwen3.6-Plus', contextWindow: 131_072 },
+  // ⚠️ 远端展示名就是 `Qwen3.5-plus`（**不是** id 里的 `qwen3.5-plus-2026-04-20`）。
+  { id: 'qwen3.5-plus-2026-04-20', name: 'Qwen3.5-plus', contextWindow: 131_072 },
+  { id: 'kimi-k2.7-code-highspeed', name: 'Kimi-K2.7-Code-Highspeed', contextWindow: 262_144 },
+  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: 131_072 },
+  { id: 'kimi-k2.5', name: 'Kimi-K2.5', contextWindow: 131_072 },
+  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000 },
+  { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 131_072 },
+  { id: 'glm-5v-turbo', name: 'GLM-5V-Turbo', contextWindow: 131_072 },
+  { id: 'glm-5', name: 'GLM-5', contextWindow: 131_072 },
+  { id: 'doubao-seed-2-1-turbo-260628', name: 'Doubao-Seed-2.1-Turbo', contextWindow: 256_000 },
+  { id: 'doubao-seed-2-0-code-preview-260215', name: 'Doubao-Seed-2.0-Code', contextWindow: 131_072 },
 ]
 
 /**

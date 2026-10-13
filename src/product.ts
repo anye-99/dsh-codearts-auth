@@ -173,9 +173,18 @@ export interface BuddyProduct {
  *
  * 数据来源：`/v3/config` 的 `craft` agent 白名单，并**逐个用真实请求验证可用**
  * （`POST /v2/chat/completions`，stream 模式）。只收录实测返回可用的模型 ——
- * 远端 `data.models` 里另有一批 `code=11102 service info not found` 的条目
- * （glm-4.6/4.7/5.0、minimax-m2.5、kimi-k2.5/k2.8-preview、hunyuan-* 等），
- * 列进选择器只会让用户选中后报错，故一律不收录。
+ * 远端 `data.models` 里另有一批条目**未被任何 agent 引用**（服务端自己的
+ * 「不可选」信号），列进选择器只会让用户选中后报错，故一律不收录。
+ *
+ * ⚠️ **2026-10-09 实测修正**：旧注释把该批条目说成「返回
+ * `code=11102 service info not found`」，但**本次只读采集无法复现该错误**
+ * （未发推理请求，故不下「仍报 11102」的结论）。可确证的只有两点：
+ * ① 远端**仍在下发**它们；② 服务端**没把它们列进任何 agent 白名单**。
+ * 该批 id：`glm-4.6` / `glm-4.7` / `glm-5.0` / `glm-4.6v` / `minimax-m2.5` /
+ * `kimi-k2.5` / `kimi-k2-thinking` / `deepseek-v3-2-volc` / `hunyuan-2.0-thinking` /
+ * `hunyuan-chat` / `hy4-preview-x`。
+ * ⚠️ 旧注释还把 `kimi-k2.8-preview` 列在其中，**那是错的** —— 它已被
+ * craft/ask/plan 引用且**已在下方表中收录**（两处注释曾自相矛盾，本次一并订正）。
  */
 const CODEBUDDY_FALLBACK_MODELS: readonly BuddyFallbackModel[] = [
   {
@@ -191,10 +200,15 @@ const CODEBUDDY_FALLBACK_MODELS: readonly BuddyFallbackModel[] = [
     reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000,
   },
   {
-    // maxOutputTokens 实测（2026-09-19）：scoped 端点 128000、/v3/config 131072。
-    // 取 **128000**（两个端点的较小者）：它是服务端真正接受的额度，131072 是
-    // /v3/config 的声明值。取小者避免因端点差异被上游拒绝；远端可用时仍以
-    // 远端下发值为准，本字段只在远端缺失时补位。
+    // maxOutputTokens 实测（2026-10-09 逐端点复核，`scripts/probe-tencent-maxout.mjs`）：
+    // **scoped 128000、/v3/config 393216**（config 的声明值随版本上浮）。
+    // 取 **128000**（两个端点的较小者）：它是服务端真正接受的额度，取小者避免因
+    // 端点差异被上游拒绝；远端可用时仍以远端下发值为准，本字段只在远端缺失时补位。
+    //
+    // ⚠️ 这是本表**唯一**一条两端点一致的条目之外的通用口径：实测 `deepseek-v4-pro`
+    // / `glm-5.3` / `glm-5.2` / `kimi-k3-1` / `kimi-k2.8-preview` / `minimax-m3`
+    // 的 config 值都显著高于 scoped（如 `kimi-k3-1` 32000 vs 1048576），
+    // 而本表一律取 scoped —— 别照 config 的「大数」改，那会让请求被上游拒绝。
     id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, supportsImages: true,
     reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 128_000,
   },
@@ -220,8 +234,12 @@ const CODEBUDDY_FALLBACK_MODELS: readonly BuddyFallbackModel[] = [
     reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000,
   },
   {
+    // ⚠️ maxOutputTokens 实测（2026-10-09）：**两个端点都下发 131072**
+    // （scoped `/console/enterprises/personal/models` 与 `/v3/config` 一致）。
+    // 旧值 32000 与两者皆不符，会让远端失败时的兜底路径把输出上限压到远低于
+    // 真实能力（用户拿到被截断的回复）。
     id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 1_000_000, supportsImages: true,
-    reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000,
+    reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 131_072,
   },
   {
     id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, supportsImages: true,
@@ -238,11 +256,15 @@ const CODEBUDDY_FALLBACK_MODELS: readonly BuddyFallbackModel[] = [
     maxOutputTokens: 48_000,
   },
   {
-    id: 'glm-5v-turbo', name: 'GLM-5V-Turbo', contextWindow: 200_000, supportsImages: true, reasoningEfforts: ['medium'],
+    // ⚠️ 展示名与远端对齐（2026-10-09 实测远端 `name` 是 `GLM-5v-Turbo`，
+    // 小写 v；旧值 `GLM-5V-Turbo` 与之不符）。
+    id: 'glm-5v-turbo', name: 'GLM-5v-Turbo', contextWindow: 200_000, supportsImages: true, reasoningEfforts: ['medium'],
     maxOutputTokens: 64_000,
   },
   {
-    id: 'kimi-k3-1', name: 'Kimi-K3-1', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['medium'],
+    // ⚠️ 展示名与远端对齐（2026-10-09 实测远端 `name` 是 `Kimi-K3`，无 `-1`；
+    // id 仍保留 `kimi-k3-1`，它是发给服务端的 wire 值）。
+    id: 'kimi-k3-1', name: 'Kimi-K3', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['medium'],
     maxOutputTokens: 32_000,
   },
   {
@@ -252,7 +274,8 @@ const CODEBUDDY_FALLBACK_MODELS: readonly BuddyFallbackModel[] = [
     reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000,
   },
   {
-    id: 'kimi-k2.7', name: 'Kimi-K2.7', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['medium'],
+    // ⚠️ 展示名与远端对齐（2026-10-09 实测远端 `name` 是 `Kimi-K2.7-Code`）。
+    id: 'kimi-k2.7', name: 'Kimi-K2.7-Code', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['medium'],
     maxOutputTokens: 32_000,
   },
   {

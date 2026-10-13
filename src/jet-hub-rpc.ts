@@ -8,6 +8,7 @@
  *           account.reorder / account.refresh / account.retest / account.retestAll /
  *           account.reset / account.resetAll / login.poll /
  *           credits.status / credits.claimAll / credits.balances /
+ *           checkin.auto.get / checkin.auto.set /
  *           model.list / model.setDisabled /
  *           backup.export / backup.import / backup.status
  */
@@ -15,6 +16,10 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { AccountPool } from './account-pool.js'
+// 每日自动签到：**装配层**（持久化状态 + 逐渠道执行 + 日志出口）。
+// ⚠️ 只取它的类型与 RPC 动词用到的快照：真正的执行发生在 `src/index.ts`
+// 的启动路径上，本文件**不**负责触发（见 `checkin.auto.*` 两个 case 的注释）。
+import type { AutoCheckinController, AutoCheckinStatusSnapshot } from './auto-checkin-controller.js'
 import type { CodeArtsAuth } from './service.js'
 import type { CodeArtsCredential } from './types.js'
 import type { BuddyAuth } from './buddy-auth.js'
@@ -52,6 +57,30 @@ import { MINIMAX } from './minimax-product.js'
 import type { MinimaxAuth, StartedMinimaxLoginFlow } from './minimax-auth.js'
 import { isMinimaxRefreshable, minimaxCredentialExpiresAtMs } from './minimax.js'
 import type { MinimaxCredential } from './minimax.js'
+// ===== TeleAgent（星辰超级智能体，中国电信天翼 AI）=====
+// OpenAI 兼容 + **无续期端点** + 登录产物靠**用户粘贴回调 URL**。
+// 因第三点，它比其余面板多一个扩展动词 `teleagent.loginSubmitCallback`
+// （与 `antigravity.loginSubmitCode` 同型：无标准对应物的动作走扩展命名空间）。
+import { TELEAGENT } from './teleagent-product.js'
+import type { TeleagentAuth } from './teleagent-auth.js'
+import { teleagentCredentialExpiresAtMs } from './teleagent.js'
+import {
+  TeleagentBrowserLoginError,
+  type TeleagentBrowserLoginFailure,
+} from './teleagent-cdp-login.js'
+import type { TeleagentCredential } from './teleagent.js'
+// ===== Step Code（阶跃星辰 StepFun）=====
+// ⚠️ **不需要任何扩展动词**：它是标准两步式登录（浏览器授权 + 本地轮询），
+// 与 codearts / qoder / minimax / zcode 共用同一条「弹窗 + login.poll」路径。
+// 故这里只导入 auth 类型、产品常量与凭据纯函数，没有 `stepcode.*` 分支。
+import type { StepcodeAuth } from './stepcode-auth.js'
+import type { StartedStepcodeLoginFlow } from './stepcode-oauth.js'
+import { STEPCODE } from './stepcode-product.js'
+import {
+  claimTeleagentDailyCheckin,
+  fetchTeleagentCheckinStatus,
+  fetchTeleagentCreditBalance,
+} from './teleagent-credits.js'
 import {
   claimMinimaxDailyCheckin,
   fetchMinimaxCreditBalance,
@@ -120,6 +149,7 @@ import {
 import { exportBackup, importBackup } from './backup.js'
 import type {
   ProviderAccountEntry,
+  ProviderAccountStatus,
   RpcBackupExportResponse,
   RpcBackupImportRequest,
   RpcBackupImportResponse,
@@ -146,6 +176,7 @@ import type {
   RpcCreditsClaimAllRequest,
   RpcCreditsClaimAllResponse,
   RpcCreditsClaimSummary,
+  RpcAutoCheckinSetRequest,
   RpcCreditsBalancesRequest,
   RpcCreditsBalancesResponse,
   RpcClineQuotaRequest,
@@ -636,6 +667,337 @@ export async function collectCreditBalances<TCredential = BuddyCredential, TProd
   return results
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 一键领取（`credits.claimAll`）的**可复用实现**
+//
+// 抽成模块级导出函数的唯一原因是：**每日自动签到要跑同一套逻辑**
+// （`src/auto-checkin.ts` → `src/auto-checkin-controller.ts` 注入的 `claim`）。
+//
+// 若两边各写一份，「某个 provider 该不该预检状态」这类分支知识会分裂成两处，
+// 而下面每一条预检注释背后都是**一次真实缺陷**（TRAE「claim 幂等、无法与真领取
+// 区分」、TeleAgent「领取端点不返回幂等码」…）—— 复制一遍等于把那些坑再踩一遍。
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Qoder 同族产品表（单协议、多产品：国际版 + 中国版）。
+ *
+ * 提到模块级是为了让**同一份判定**既服务 RPC 闭包里的四个 Qoder 分支
+ * （登录 / 单账号续期 / 余额 / 领取），又服务下面的 {@link claimAllForProvider}
+ * —— 后者在闭包之外，拿不到闭包里那份带 `auth` 实例的注册表。
+ */
+const QODER_FAMILY_PRODUCTS: readonly QoderProduct[] = Object.freeze([QODER, QODER_CN])
+
+/**
+ * 按 provider id 取 Qoder 同族的产品配置；非本族返回 `undefined`。
+ *
+ * ⚠️ 判据只认 `product.id`，**不**返回 `auth` 实例 —— 需要实例的分支
+ * （登录 / 续期 / 余额）仍然走闭包里的注册表，它们必须拿到与本 provider
+ * 配套的那个 `QoderAuth`，拿错会以「另一个站点的凭据」发请求。
+ */
+export function qoderProductOf(provider: string): QoderProduct | undefined {
+  return QODER_FAMILY_PRODUCTS.find((product) => product.id === provider)
+}
+
+/** {@link claimAllForProvider} 的注入依赖。 */
+export interface ClaimAllDeps {
+  /** 账号池（取账号列表、读 TRAE 签到设备代次）。 */
+  pool: AccountPool
+  /** 凭据解析。 */
+  resolve: (ref: CredentialRef) => Promise<{ value: string } | undefined>
+  /**
+   * LobsterAI 实例 —— 只为 `resolveClientVersion()`（签到的必填 query 参数，
+   * 带缓存，通常无额外网络开销）。
+   */
+  lobsterai: LobsteraiAuth
+  /**
+   * Loomy 实例 —— 领取要经它的签名层（`src/loomy-sign.ts`），
+   * 实例携带注入的 fetcher 与日志出口。
+   */
+  loomy: LoomyAuth
+  /** ZCode 实例 —— 只为 `claimDailyFor()` 与它的 captcha 产出。 */
+  zcode: ZcodeAuth
+  /** 单账号异常时的告警出口（不参与控制流）。 */
+  warn?: (message: string) => void
+}
+
+/**
+ * 该 provider **不支持**每日签到时抛出。
+ *
+ * 用异常而不是返回判别联合，是为了让自动签到侧的「单渠道失败不中断整体」
+ * （`try { await claim(provider) } catch { … }`）与本函数共用一个出口 ——
+ * 否则调用方要写两套判断（`res.ok === false` 与 `catch`）。
+ * RPC 层捕获它并转成规范的 `bad-request`，行为与重构前完全一致。
+ */
+export class UnsupportedClaimProviderError extends Error {
+  readonly code = 'bad-request'
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnsupportedClaimProviderError'
+  }
+}
+
+/**
+ * 按 provider 执行一次「一键领取」（逐账号顺序执行，单账号失败不中断整体）。
+ *
+ * 这里是**唯一**实现：RPC 的 `credits.claimAll` 与每日自动签到都调它。
+ *
+ * @param provider - provider id。
+ * @param deps - 账号池 / 凭据解析 / LobsterAI 与 ZCode 实例。
+ * @throws {UnsupportedClaimProviderError} 该 provider 没有签到能力时。
+ */
+export async function claimAllForProvider(
+  provider: string,
+  deps: ClaimAllDeps,
+): Promise<RpcCreditsClaimAllResponse> {
+  const { pool, resolve, warn } = deps
+  const accounts = await pool.listAccounts(provider)
+
+  // ⚠️ Qoder 同族用 `qoderProductOf()` 单独判定（它的产品 id 是**动态的**：
+  // 国际版 / 中国版两个 id 共用这一段实现），故不放进下面的 `switch`。
+  const qoderProduct = qoderProductOf(provider)
+  if (qoderProduct !== undefined) {
+    // Qoder 的领取流程**自带活动列表查询**（loadCampaigns → 逐个 claim），
+    // 故 precheckStatus: false 跳过外部那次检查 —— 否则会重复发一次 GET
+    //（与 LobsterAI 传 false 的理由同类）。
+    //
+    // ⚠️ Qoder 的幂等判据是响应体的 `replayed:true`（重复领取同样返回
+    // HTTP 200），已在 claimQoderCampaign 内部处理。
+    return await collectClaimResults<QoderCredential, undefined>(accounts, undefined, {
+      resolve,
+      claim: (credential) => claimQoderDailyCheckin(credential, qoderProduct),
+      precheckStatus: false,
+      warn,
+    })
+  }
+
+  /**
+   * 其余渠道逐个分支。
+   *
+   * ⚠️ 用 `switch` 而不是 `if (provider === X.id)` 链：文件里另有多处
+   * 源码级断言以 `indexOf('provider === X.id')` 定位**别的** case 块
+   * （`account.create` 的占位条目 / `account.refresh` 的分派…）。写成 `if`
+   * 链会让那些断言**命中本函数**而不是它们要找的地方 —— 测试会以「找不到
+   * 某段文本」的形式失败，而根因与它们要守的行为毫无关系（真实发生过一次）。
+   * `case X.id:` 的文本形态天然不与之冲突。
+   */
+  switch (provider) {
+  case 'codearts': {
+    // CodeArts（华为云）走**签名**协议，与两个腾讯系 provider 都不同源：
+    // 领取流程自带「账户类型 + 活动列表」预检（见 claimCodeArtsDailyCheckin），
+    // 故 precheckStatus: false 跳过外部那次 CodeBuddy 式的状态查询 ——
+    // 用 fetchCheckinStatus 打华为端点既发错请求又必然失败。
+    return await collectClaimResults<CodeArtsCredential, undefined>(accounts, undefined, {
+      resolve,
+      claim: (credential) => claimCodeArtsDailyCheckin(credential),
+      precheckStatus: false,
+      warn,
+    })
+  }
+
+  case LOBSTERAI.id: {
+    // LobsterAI 的 clientVersion 是签到必填参数，需动态解析
+    //（带缓存，通常无额外网络开销）。
+    const clientVersion = await deps.lobsterai.resolveClientVersion()
+    return await collectClaimResults(accounts, LOBSTERAI, {
+      resolve,
+      claim: (credential, product) =>
+        claimLobsteraiDailyCheckin(credential, product, clientVersion),
+      // 领取流程内部已做 slot/context 预检，不需要外部再查一次状态。
+      precheckStatus: false,
+      warn,
+    })
+  }
+
+  case TRAE.id: {
+    return await collectClaimResults<TraeCredential, undefined>(accounts, undefined, {
+      resolve,
+      // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
+      //
+      // TRAE 的 claim 对「今天已签到」是**幂等**的：实测重复领取同样返回
+      // `{code:0, message:"success"}`，与真正领取成功**无法区分**。
+      // 早期照抄 LobsterAI 传了 `precheckStatus: false`（那是「领取流程内部
+      // 已做 slot/context 预检」的理由，TRAE 没有这回事），于是已签到的账号
+      // 被报成「领取成功」（用户报障：显示成功但 +0 积分）。
+      // 判据只能是 status 端点的 `checked_in`。
+      fetchStatus: (credential) =>
+        fetchTraeCheckinStatus(credential as TraeCredential, TRAE, fetch),
+      claim: (credential, _product, entry) =>
+        claimTraeDailyCheckin(
+          credential as TraeCredential,
+          TRAE,
+          fetch,
+          pool.traeCheckinDeviceGenerationFor(entry.id),
+          (next) => pool.updateTraeCheckinDeviceGeneration(entry.id, next),
+        ),
+      warn,
+    })
+  }
+
+  case TELEAGENT.id: {
+    // ⚠️ **开启状态预检**（不传 precheckStatus: false）：
+    // TeleAgent 的领取端点（`GET …/checkTask?type=daily_login`）
+    // **不返回显式幂等码**（asar 里领取后是重查面板刷新 UI），
+    // 故「今天已领」只能靠 status 端点的 `claimed_today` 判 ——
+    // 与 TRAE 那条「claim 幂等且无法区分」的教训同因
+    //（照抄 LobsterAI 传 false 会把已签到报成「领取成功 +0」）。
+    return await collectClaimResults<TeleagentCredential, undefined>(accounts, undefined, {
+      resolve,
+      fetchStatus: (credential) => fetchTeleagentCheckinStatus(credential),
+      claim: (credential) => claimTeleagentDailyCheckin(credential),
+      warn,
+    })
+  }
+
+  case LOOMY.id: {
+    // Loomy 的「签到」= `POST /points/first-login`（触发每日赠送额度）。
+    // ⚠️ 语义**不是**「+5000 积分」：`dailyBalance = dailyQuota - dailyConsumed`，
+    // 消耗后不回补。文案由 claimLoomyDailyQuota 的 already-claimed 表达。
+    // 领取流程自带幂等判据（`alreadyProcessed`），故不做额外预检。
+    const values: RpcCreditsClaimAccountResult[] = []
+    for (const account of accounts) {
+      const resolved = await resolve(credentialRef(account.credentialRef))
+      if (!resolved) {
+        values.push({
+          accountId: account.id, nickname: account.nickname,
+          outcome: { kind: 'failed', code: -1, message: '凭据未配置' },
+        })
+        continue
+      }
+      let credential: LoomyCredential
+      try {
+        credential = JSON.parse(resolved.value) as LoomyCredential
+      } catch {
+        values.push({
+          accountId: account.id, nickname: account.nickname,
+          outcome: { kind: 'failed', code: -1, message: '凭据解析失败' },
+        })
+        continue
+      }
+      const outcome = await deps.loomy.claimDailyQuota(credential)
+      values.push({ accountId: account.id, nickname: account.nickname, outcome })
+    }
+    return {
+      summary: computeClaimSummary(values.map((v) => v.outcome)),
+      results: values,
+    }
+  }
+
+  case CLINE.id: {
+    // Cline **没有签到端点**（见 src/cline-credits.ts 的模块注释：
+    // 对整个 sidecar 做字符串扫描，无任何 checkin/campaign 业务端点）。
+    // 客户端按能力矩阵（`credits-capabilities.js` 的
+    // `cline: { balance: true, dailyCheckin: false }`）根本不会渲染
+    // 「一键领取积分」按钮、也不会发起本调用；这里显式返回可读错误，
+    // 而不是落到下面 `productById` 的 `unsupported provider` 泛化文案
+    // —— 后者会让排查者以为是「provider 没注册」，而真相是「该产品无此能力」。
+    throw new UnsupportedClaimProviderError('Cline 不支持每日签到（其后端没有签到接口）')
+  }
+
+  case RACCOON.id: {
+    // raccoon **没有签到端点**：每日 300 积分由服务端按日自动发放
+    //（账单里的 `daily_grant`，实测注册后 1 分钟即到账），
+    // 客户端按能力矩阵（`raccoon: { balance: true, onboardingTasks: true }`，
+    // **无** `dailyCheckin`）根本不会渲染「一键领取积分」按钮、也不会发起本调用。
+    throw new UnsupportedClaimProviderError(
+      'Raccoon Work 不支持每日签到（每日积分由服务端自动发放；登录奖励请在「新手任务」中领取）',
+    )
+  }
+
+  case MINIMAX.id: {
+    // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
+    //
+    // 理由与 TRAE 那条同型（见上方 TRAE 分支的详细注释）：MiniMax 的
+    // `claimMinimaxDailyCheckin` 靠响应体的 `claim_result` 判幂等
+    //（`1`=真领取、`2`=已领过），这在 **HTTP 层**是可靠的；但状态预检是
+    // 第二道防线 —— 若某天服务端对已领账号也回 `claim_result: 1`，
+    // 预检能靠 `todayCheckedIn` 先挡住，避免把「今天已领」报成「+积分」。
+    // 反之传 false 会让已签到账号走到 claim 请求（多发一次 POST）。
+    return await collectClaimResults<MinimaxCredential, undefined>(accounts, undefined, {
+      resolve,
+      fetchStatus: (credential) => fetchMinimaxSigninStatus(credential),
+      claim: (credential) => claimMinimaxDailyCheckin(credential),
+      warn,
+    })
+  }
+
+  case ZCODE.id: {
+    /**
+     * ZCode 的「一键领取」= 补激活上报 → preview → 逐个 claim。
+     *
+     * ⚠ **每个 plan 都要重新产一个 captcha**（captcha 一次性，
+     * 复用会得 `3007`）—— 故不能复用 `collectClaimResults`
+     * 那套「一个凭据一次 claim」的形状（它假设 `claim()` 内部
+     * 自己处理幂等），这里自己遍历账号与 plan。
+     *
+     * ⚠ ZCode **没有**独立的「今日是否已领」端点，故不调
+     * `precheckStatus`（`claimDailyWith` **自带**激活上报与
+     * preview 查询，重复调用只会多发一次无谓请求）。
+     */
+    const results: RpcCreditsClaimAllResponse['results'] = []
+    const outcomes: ClaimOutcome[] = []
+    for (const account of accounts) {
+      const resolved = await resolve(credentialRef(account.credentialRef))
+      let accountOutcomes: ClaimOutcome[]
+      if (!resolved) {
+        accountOutcomes = [{ kind: 'failed', code: -1, message: '凭据未配置' }]
+      } else {
+        let credential: ZcodeCredential | undefined
+        try {
+          credential = JSON.parse(resolved.value) as ZcodeCredential
+        } catch {
+          credential = undefined
+        }
+        if (credential === undefined) {
+          accountOutcomes = [{ kind: 'failed', code: -1, message: '凭据解析失败' }]
+        } else {
+          /**
+           * captcha 回调：每次都现产一个新 param。
+           * 缺浏览器时抛错由 `claimDailyFor` 内部转成可读的
+           * failed outcome（不让整个端点失败）。
+           */
+          accountOutcomes = await deps.zcode.claimDailyFor(credential, async () => {
+            const config = await deps.zcode.fetchCaptchaConfig().catch(() => undefined)
+            return await deps.zcode.mintCaptcha(config)
+          })
+        }
+      }
+      // ⚠ 一个账号可能有多条 outcome（多个 plan）——
+      // `RpcCreditsClaimAccountResult` 只装一条，故逐条展开。
+      for (const outcome of accountOutcomes) {
+        results.push({ accountId: account.id, nickname: account.nickname, outcome })
+        outcomes.push(outcome)
+      }
+    }
+    return { results, summary: computeClaimSummary(outcomes) }
+  }
+  }
+
+  // 未在上面登记的 provider：CodeBuddy 系（buddy / workbuddy）走产品配置。
+  const product = productById(provider)
+  if (product === undefined) {
+    throw new UnsupportedClaimProviderError(`unsupported provider: ${provider}`)
+  }
+  return await collectClaimResults(accounts, product, { resolve, warn })
+}
+
+/**
+ * `checkin.auto.*` 在装配层缺席时的规范错误。
+ *
+ * 刻意用**独立的错误码**（而不是伪造一份 `enabled: false` 的快照）：后者会让
+ * 面板显示「已关闭」，用户点开关却回 `bad-request` —— 一个无法解释的组合。
+ * 独立错误码让前端能如实说「本进程不提供该功能」。
+ */
+function autoCheckinUnavailable(): { ok: false; error: { code: string; message: string } } {
+  return {
+    ok: false,
+    error: {
+      code: 'jet-hub/auto-checkin-unavailable',
+      message: '每日自动签到不可用（本进程未装配调度器）',
+    },
+  }
+}
+
 /**
  * 读取 `ctx.llm` 用于枚举 provider 的模型目录。
  *
@@ -681,7 +1043,28 @@ export function registerJetHubRpc(
   raccoon: RaccoonAuth,
   /** MiniMax Code **中国版**实例（OAuth 设备码 + PKCE，与 Qoder 同型但协议不同）。 */
   minimax: MinimaxAuth,
+  /**
+   * TeleAgent（星辰超级智能体，中国电信天翼 AI）实例。
+   *
+   * ⚠️ 「位置参数陷阱」（AGENTS.md）：新增形参必须 `grep -n 'registerJetHubRpc(' tests/`
+   * 把**每一处**调用点补齐占位，否则 `zcode` 及之后的实参会整体错位一格
+   * （`modelAdapters` 会落到 auth 形参上）。
+   */
+  teleagent: TeleagentAuth,
   zcode: ZcodeAuth,
+  /**
+   * Step Code（阶跃星辰 StepFun）实例。
+   *
+   * ⚠️ 「位置参数陷阱」（AGENTS.md，已踩过三次）：新增形参必须
+   * `grep -n 'registerJetHubRpc(' tests/` 把**每一处**调用点补齐占位，
+   * 否则 `antigravity` / `modelAdapters` 会整体错位一格
+   * （`modelAdapters` 落到 auth 形参上，表现为「模型展示名退化成裸 id」）。
+   *
+   * 位置口径：统一插在 **zcode 之后、antigravity 之前** ——
+   * 与客户端 `PROVIDERS`、`REF_PREFIX_TO_PROVIDER` 三处对齐
+   * （antigravity 恒为最后一个，它是非凭据型的特殊面板）。
+   */
+  stepcode: StepcodeAuth,
   /**
    * Antigravity（Google `agy` CLI）服务实例。
    *
@@ -702,11 +1085,24 @@ export function registerJetHubRpc(
    * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
    */
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  /**
+   * 「每日自动签到」的装配层（可选）。
+   *
+   * 用它实现 `checkin.auto.get` / `checkin.auto.set` 两个动词。省略时这两个
+   * 动词回 `jet-hub/auto-checkin-unavailable`（headless profile 与单测替身
+   * 都可以省略）。
+   *
+   * ⚠️ **刻意追加在形参表末尾**，而不是插在 `antigravity` / `modelAdapters`
+   * 之前：本函数的实参是**位置式**的，插在中间会让后两者整体错位一格
+   * （AGENTS.md「位置参数陷阱」，本仓库已因它踩过三次）。
+   */
+  autoCheckin?: AutoCheckinController,
 ): void {
   ctx.inject(['connection'], (connectionCtx) => {
     registerJetHubEndpoints(
       connectionCtx as Context, pool, codearts, buddy, workbuddy, lobsterai,
-      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, antigravity, modelAdapters,
+      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, teleagent, zcode, stepcode, antigravity, modelAdapters,
+      autoCheckin,
     )
   })
 }
@@ -718,7 +1114,82 @@ export function registerJetHubRpc(
  */
 export interface ModelCatalogSource {
   listAllModels(): readonly { id: string; name: string; isFree?: boolean }[]
+  /**
+   * 丢弃适配器内的目录缓存（可选）。
+   *
+   * ⚠️ 存在的原因：**目录门控会让「未登录」期间的 `listModels` 返回空**，
+   * 而若适配器把这个空数组落进自己的缓存，登录成功后它就**再也不拉取**了
+   * —— 症状是「登录成功但模型列表里始终没有该 provider」
+   * （2026-10-09 用户报障，Step Code 首个暴露者：它的兜底表刻意为空）。
+   *
+   * ⇒ 凡「登录成功会改变目录内容」的 provider 都应实现它，并在
+   * `account.create` 的成功回调里**先失效服务端缓存、再广播客户端**
+   * （两层缓存漏一层，症状完全一样）。
+   *
+   * 声明为可选：多数 provider 的目录不依赖登录态，不必实现。
+   */
+  invalidateModelCache?(): void
 }
+
+/**
+ * 判断某条账号的凭据在 `ctx.credentials` 里**是否真的存在且非空**。
+ *
+ * ## 为什么不能拿「条目有 credentialRef」代替它
+ *
+ * `account.create` 对每个 provider 都是**先建无凭据的占位条目**、登录成功后才写凭据。
+ * 于是「条目在、ref 也在」并不等于「凭据可用」：登录没走完时（用户关掉设置页、
+ * 粘贴内容无效、或 DSH 重启把 `startLogin` 的超时器连同内存 Map 一起丢掉）
+ * 池里会留下一条**指向空气**的条目 —— 卡片显示「已启用」，积分/签到一律报
+ * 「凭据未配置」，而 TeleAgent 那种「等用户粘贴」的面板还会因此彻底失去入口
+ * （粘贴框原本只由组件内存 state 控制）。
+ *
+ * ⚠️ **resolve 到值但值是空白串，同样判 `false`**：空串凭据在下游
+ * （各 `*-auth.ts` 的 `resolveCredential`）一律抛「凭据未配置」。若这里判成
+ * `true`，前端就不会恢复粘贴入口，等于把缺陷原样留在下游。
+ *
+ * ⚠️ **resolve 抛错也判 `false`**：对 UI 而言「读不到」就是「没配」；
+ * 但绝不能因为一个账号读不到就让整个 `account.list` 失败（列表里还有别的账号）。
+ *
+ * 本函数**只回答存在性**，绝不返回凭据内容 —— 那是密钥。
+ */
+export async function credentialIsPresent(
+  resolve: (ref: ReturnType<typeof credentialRef>) => Promise<unknown>,
+  refName: string,
+): Promise<boolean> {
+  try {
+    const resolved = await resolve(credentialRef(refName))
+    if (resolved === null || resolved === undefined) return false
+    const value = (resolved as { value?: unknown }).value
+    return typeof value === 'string' && value.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * TeleAgent 浏览器自动登录的状态表（accountId → 进度）。
+ *
+ * ## 为什么是内存表而不是持久化
+ *
+ * 它描述的是**一次正在进行的操作**：进程重启后浏览器早没了，
+ * 恢复这个状态毫无意义（面板会按 `credentialPresent` 重新给出入口）。
+ * 前端只需轮询到 `done` / `failed` 就能收敛。
+ *
+ * ⚠️ 模块级 Map 会跨 `registerJetHubRpc` 调用残留 —— 生产是单例无所谓，
+ * 但**单测里若复用同一 accountId 需先置为 idle**，否则会命中
+ * `already-running` 分支拿到假结果。
+ */
+export interface TeleagentBrowserLoginState {
+  phase: 'idle' | 'running' | 'done' | 'failed'
+  startedAt?: number
+  /** 最近一次进度文案（「浏览器已打开…」「token 取自…正在落盘…」）。 */
+  progress?: string
+  /** 失败分类，前端据此决定提示文案（没浏览器 / 窗口被关 / 超时…）。 */
+  reason?: TeleagentBrowserLoginFailure
+  error?: string
+}
+
+const teleagentBrowserLoginStates = new Map<string, TeleagentBrowserLoginState>()
 
 // ────────────────────────────────────────────────────────────────────────────
 // Antigravity（非凭据型面板，自实现版）
@@ -864,13 +1335,21 @@ function registerJetHubEndpoints(
   loomy: LoomyAuth,
   raccoon: RaccoonAuth,
   minimax: MinimaxAuth,
+  teleagent: TeleagentAuth,
   zcode: ZcodeAuth,
+  /** Step Code（阶跃星辰）实例。位置口径同 `registerJetHubRpc` 的同名形参。 */
+  stepcode: StepcodeAuth,
   /**
    * Antigravity 装配服务（非凭据型面板：账号池/登录/配额/模型目录）。
    * 可选：缺席时各 antigravity 分支回规范「不可用」错误。
    */
   antigravity?: AntigravityService,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  /**
+   * 每日自动签到的装配层（可选，位置口径同 `registerJetHubRpc` 的同名形参）。
+   * 缺席时 `checkin.auto.*` 回规范「不可用」错误。
+   */
+  autoCheckin?: AutoCheckinController,
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const connection = (ctx as any).connection ?? ctx.get('connection')
@@ -899,16 +1378,24 @@ function registerJetHubEndpoints(
   ]
   /** 该 provider 是否属于 Qoder 同族（国际版或中国版）。 */
   const isQoderFamily = (provider: string): boolean =>
-    qoderFamily.some((member) => member.product.id === provider)
+    qoderProductOf(provider) !== undefined
   /**
    * 取同族成员；不存在时抛错。
    *
    * ⚠️ 调用方**必须**先用 `isQoderFamily()` 判定。这里抛错而不是返回
    * `undefined`，是为了让分支内部不必写 `!` 或 `as` —— 那两类断言会在
    * 将来有人把判定改成别的条件时静默失效。
+   *
+   * ⚠️ 判定走**模块级**的 `qoderProductOf()`（与 `claimAllForProvider` 共用
+   * 同一份产品表）：本文件里 Qoder 相关分支有四处，各写一份
+   * `some(...)` 必然漂移出「RPC 认这个 id、批量领取不认」这类缺陷。
+   * 本表只多一件事 —— 把 auth 实例挂到对应产品上。
    */
   const requireQoderFamily = (provider: string): QoderFamilyMember => {
-    const member = qoderFamily.find((item) => item.product.id === provider)
+    const product = qoderProductOf(provider)
+    const member = product === undefined
+      ? undefined
+      : qoderFamily.find((item) => item.product.id === product.id)
     if (member === undefined) throw new Error(`Unknown Qoder family provider: ${provider}`)
     return member
   }
@@ -999,7 +1486,31 @@ function registerJetHubEndpoints(
           return { ok: true, value: { accounts } }
         }
         const accounts = await pool.listAccounts(req.provider)
-        return { ok: true, value: { accounts } }
+        // 逐条补 `credentialPresent`（凭据是否真的存在）—— 判据与动机见
+        // `credentialIsPresent` 与 `ProviderAccountStatus.credentialPresent` 的注释。
+        // ⚠️ 非凭据型条目（antigravity 的 `credentialRef` 是空串）**不带该字段**，
+        // 否则前端会把它误判成「待登录」。
+        // 并发解析：账号数是个位数，且凭据解析是本地存储读取。
+        const withPresence = await Promise.all(
+          accounts.map(async (account): Promise<ProviderAccountStatus> => {
+            if (typeof account.credentialRef !== 'string' || account.credentialRef.length === 0) {
+              return account
+            }
+            const present = await credentialIsPresent(
+              (ref) => ctx.credentials.resolve(ref),
+              account.credentialRef,
+            )
+            // TeleAgent 的**待登录**条目额外带 `loginUrl`：粘贴框能从这种条目
+            // 自动恢复（见 teleagent-login-restore.js），而那时登录窗口早关了，
+            // 提示又叫用户「重新打开天翼登录页」—— 不给链接就是指向空气。
+            // loginPageUrl() 是产品常量，不含凭据，可安全下发。
+            if (req.provider === TELEAGENT.id && present === false) {
+              return { ...account, credentialPresent: false, loginUrl: teleagent.loginPageUrl() }
+            }
+            return { ...account, credentialPresent: present }
+          }),
+        )
+        return { ok: true, value: { accounts: withPresence } }
       }
 
       case 'account.create': {
@@ -1400,6 +1911,69 @@ function registerJetHubEndpoints(
           })
 
           return { ok: true, value: { accountId: id, loginUrl: minimaxStarted.loginUrl } }
+        } else if (provider === TELEAGENT.id) {
+          /**
+           * TeleAgent（星辰超级智能体）——**登录产物靠用户粘贴回调 URL**。
+           *
+           * ## 为什么不能像其余面板那样全自动
+           *
+           * 官方桌面端靠**自带 BrowserWindow 监听导航**抓 token
+           * （asar `eOe()`：命中 `/cowork/auth?code=…` 即取 `token`），
+           * 而它的回调地址是**服务端常量**（`LOGIN_PAGE` 写死在 asar，
+           * 没有任何 `redirect_uri` / `auth_callback_url` 参数可配）——
+           * 所以插件既起不了本地监听（服务端不会往 127.0.0.1 回跳），
+           * 也注册不了 `teleai-cowork://` 这个系统协议。
+           *
+           * ⇒ 唯一可行路径：打开登录页 → 用户授权 → 复制浏览器地址栏里
+           * 那条带 `token=` 的最终 URL → 回到面板粘贴（扩展动词
+           * `teleagent.loginSubmitCallback`）。与 Antigravity
+           * 「loopback 绑不上时降级为人工粘码」是同一处置思路。
+           *
+           * ⚠️ 仍走**两步式**：先返回 loginUrl 让前端在用户手势窗口内弹窗，
+           * 后台等提交（绝不等完才返回 URL —— 那会让弹窗被拦截，
+           * AGENTS.md 记过「主页面被跳转」的同型缺陷）。
+           */
+          await pool.addAccount({
+            id,
+            provider: TELEAGENT.id,
+            nickname: id,
+            enabled: true,
+            credentialRef: refName,
+            // ⚠️ 恒 false：TeleAgent **没有** refresh 端点（asar 全文无
+            // refresh_token / ExchangeToken / token 刷新调用）。
+            // 写成 true 会让定时器每 30 分钟对一个不可能成功的操作发一轮请求。
+            refreshable: false,
+            createdAt: Date.now(),
+          })
+
+          const teleagentStarted = await teleagent.startLogin(id)
+          teleagentStarted.result.catch((error: unknown) => {
+            ctx.logger.warn(`[jet-hub] background ${TELEAGENT.id} login failed for ${id}: ${String(error)}`)
+            // 登录超时 / 取消：移除占位条目，避免留下无凭据的幽灵账号。
+            //
+            // ⚠️ **但先确认凭据到底落盘了没有**。`submitLogin` 已在入口处拆掉
+            // 超时定时器，仍留有一个残余窗口：定时器恰好在本 case 的
+            // `findAccount` 通过之后、`submitLogin` 认领之前引爆。
+            // 而 `removeAccount` 会**连带 `credentials.unset`**
+            // （见 account-pool.ts 的 removeAccount），此时再删条目就是
+            // 把一次**已成功**的登录抹掉（或反过来留下指向已删条目的孤儿凭据）。
+            void (async () => {
+              const present = await credentialIsPresent(
+                (ref) => ctx.credentials.resolve(ref),
+                refName,
+              )
+              if (present) {
+                ctx.logger.warn(
+                  `[jet-hub] ${TELEAGENT.id} 登录结果落定为失败，但凭据已写入 ⇒ `
+                  + `保留条目 ${id}（删除会连带撤销刚落盘的凭据）`,
+                )
+                return
+              }
+              await pool.removeAccount(id).catch(() => {})
+            })()
+          })
+
+          return { ok: true, value: { accountId: id, loginUrl: teleagentStarted.loginUrl } }
         } else if (provider === ZCODE.id) {
           /**
            * zcode 走**两步式**（与 codearts / qoder 等同型）：
@@ -1498,6 +2072,133 @@ function registerJetHubEndpoints(
             void pool.removeAccount(id).catch(() => {})
           })
           return { ok: true, value: { accountId: id, loginUrl: started.loginUrl } }
+        } else if (provider === STEPCODE.id) {
+          /**
+           * Step Code（阶跃星辰）走**标准两步式**（与 zcode / minimax / qoder 同型）：
+           * 立刻返回官方授权 URL 让前端弹窗，后台轮询等用户在浏览器里点「同意」。
+           *
+           * ## 为什么它不需要任何扩展动词
+           *
+           * 官方登录是「服务端签发 flow_id → 浏览器打开
+           * `/cli-login-remote?flow_id=` → 本地轮询 `/poll/{flow_id}`」，
+           * 轮询**由本插件自己发起**，凭据直接从轮询响应里拿到
+           * （`credential.api_key`）。
+           * ⇒ 既不像 teleagent 那样要用户粘贴回调 URL（那个 provider 收不到
+           * 服务端常量式的回调地址），也不像 antigravity 那样要靠官方二进制。
+           * 因此**不需要** `stepcode.*` 扩展动词，前端也**不需要**任何专属 UI ——
+           * 与其余面板共用同一条「弹窗 + `login.poll`」路径。
+           *
+           * ⚠️ 绝不能在用户授权完成后才返回 loginUrl —— `window.open` 只在
+           *    用户手势窗口内有效，那时手势早已过期、弹窗必被拦截。
+           *
+           * ⚠️ 先登记**占位条目**（无凭据），使前端 `login.poll` 能立即看到该账号；
+           *    登录成功后再回填昵称。失败则删除占位条目。
+           */
+          await pool.addAccount({
+            id,
+            provider: STEPCODE.id,
+            nickname: id,
+            enabled: true,
+            credentialRef: refName,
+            // ⚠ 恒 false：Step Code 的凭据是**静态 api_key**，官方
+            // `refreshStepOAuth()` 不发任何请求（只校验哨兵串后原样返回）。
+            // 写成 true 会让定时器每 5 分钟对一个不可能成功的操作发一轮请求。
+            refreshable: false,
+            createdAt: Date.now(),
+          })
+
+          let stepcodeStarted: StartedStepcodeLoginFlow
+          try {
+            stepcodeStarted = await stepcode.startLogin(id)
+          } catch (error) {
+            // init 请求失败（拿不到 flow_id）：删掉占位条目，不留幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+            const reason = error instanceof Error ? error.message : String(error)
+            throw new Error(`无法启动 Step Code 登录（init 请求失败）：${reason}`)
+          }
+
+          stepcodeStarted.result.then(async (flowResult) => {
+            const persisted = await stepcode.persistLogin(flowResult, { refName })
+            /**
+             * ★ **重复账号去重**（照 zcode 分支的既有处置，判据换成 `uid`）。
+             *
+             * 判据必须用**服务端下发的稳定标识**：Step Code 的 poll 响应在
+             * **顶层**给 `uid`（不在 `credential` 里），它是账号的稳定 id。
+             * 而 `access_token`（那把 api_key）每次重新登录都会**换新的**，
+             * 拿它判重会永远去重不掉（与 zcode「不能用 `device_mid` 判重」同因）。
+             *
+             * ⚠️ 处置是**停用 + 改名**，不是删除：前端 `login.poll` 靠
+             * 「条目还在 + 凭据已写入」判断成功，删掉条目会让一次**成功**的
+             * 登录显示成「登录失败」，误导用户反复重试。
+             *
+             * ⚠️ `uid` 可能缺席（官方 `readBoundedUid` 对不合规值直接丢弃），
+             * 此时**跳过去重**而不是报错 —— 缺判据不等于「不重复」。
+             */
+            const uid = persisted.uid
+            if (typeof uid === 'string' && uid.length > 0) {
+              const existingId = await pool.findAccountIdByIdentityField(
+                STEPCODE.id,
+                'uid',
+                uid,
+              )
+              if (existingId.length > 0 && existingId !== id) {
+                ctx.logger.warn(
+                  `[jet-hub] ${STEPCODE.id} 该账号（uid=${uid}）已存在于 ${existingId}，`
+                  + `新条目 ${id} 已自动停用（不参与选号）`,
+                )
+                await pool.updateAccount(id, {
+                  nickname: 'Step Code（重复，已停用）',
+                  enabled: false,
+                })
+                return
+              }
+            }
+            await pool.updateAccount(id, {
+              nickname: persisted.nickname ?? id,
+              // ⚠️ `flowResult.expires` 恒 `0`（静态凭据无有效期）⇒ 这里恒为
+              // `undefined`，UI 显示「无有效期」。用与 raccoon / loomy 分支
+              // **同款**的 `> 0 ? … : undefined` 写法，不要直接塞 0
+              // （0 会被当成 1970 年、显示成「已过期 55 年」）。
+              expiresAt: flowResult.expires > 0 ? flowResult.expires : undefined,
+              refreshable: flowResult.refreshable,
+            })
+            /**
+             * ★ **登录成功必须广播目录变更**（真实缺陷，2026-10-09 用户报障
+             * 「模型列表里没有这个」）。
+             *
+             * ## 为什么非广播不可
+             *
+             * 适配器的 `listModels` 有**目录门控**（无已登录账号 ⇒ 返回 `[]`，
+             * 让 DSH 隐藏整个 provider 分组，见 `providerCatalogVisible`）。
+             * 于是典型时序是：
+             *   ① 用户首次打开模型设置 ⇒ stepcode 还没登录 ⇒ `listModels` 返回 `[]`；
+             *   ② 客户端 `ModelCatalogDirectory` 把这份**空目录**存成
+             *      `status === 'ready'` —— 而它在 ready 时**短路返回缓存**，
+             *      只在 `llm/adapters-updated` / `settings/document-updated` /
+             *      `credentials/reference-updated` 三个事件上才 `refresh()`；
+             *   ③ 用户随后在面板完成登录 ⇒ 凭据落盘，但**没有任何事件**通知客户端
+             *      ⇒ 那份空目录缓存永不失效 ⇒ 「模型列表里始终没有这个 provider」，
+             *      直到重启 DSH。
+             *
+             * ⚠️ 这与 `model.setDisabled` 后必须广播是**同一个机制、同一个坑**
+             * （见 `broadcastCatalogChanged` 的长注释）—— 凡是让目录内容变化的
+             * 写入都要广播，这里漏了一次。
+             *
+             * ⚠️ 广播放在**账号条目更新之后**：顺序反了会让客户端在被通知时
+             * 读到的仍是「无凭据」状态，拿到第二次空目录（比不广播更难查）。
+             */
+            // ⚠️ 顺序不可颠倒：先失效**服务端**适配器缓存，再通知客户端重读。
+            // 反了的话客户端重读时服务端仍返回缓存的空目录，白跑一趟
+            // （服务端与客户端两层缓存都要清，漏一层症状相同）。
+            modelAdapters?.stepcode?.invalidateModelCache?.()
+            broadcastCatalogChanged(ctx)
+          }).catch((error: unknown) => {
+            ctx.logger.warn(`[jet-hub] background ${STEPCODE.id} login failed for ${id}: ${String(error)}`)
+            // 登录失败 / 超时 / 用户拒绝：移除占位条目，避免留下无凭据的幽灵账号。
+            void pool.removeAccount(id).catch(() => {})
+          })
+
+          return { ok: true, value: { accountId: id, loginUrl: stepcodeStarted.loginUrl } }
         } else if (provider === ANTIGRAVITY_PROVIDER_ID) {
           /**
            * Antigravity（**非凭据型**面板）与其余 provider 同为「两步式」，
@@ -1697,6 +2398,13 @@ function registerJetHubEndpoints(
               // `expiresAt` 写回账号池，否则 UI 一直显示「已过期」。
               await minimax.refreshAccountCredential(entry.credentialRef, pool, entry.id)
               break
+            case TELEAGENT.id:
+              // ⚠️ TeleAgent **没有 refresh 端点**（与 Loomy / zcode 同类）：
+              // 这里只能做**有效性探测**（调 `cowork/user_info`），
+              // 失效时抛「请重新登录」。顺手回填昵称（首次登录时若 user_info
+              // 没拿到，这里能补上）。见 TeleagentAuth.refreshAccountCredential。
+              await teleagent.refreshAccountCredential(entry.credentialRef, pool, entry.id)
+              break
             case ZCODE.id:
               /**
                * zcode **没有 refresh 端点**（凭据是静态的，与 Loomy 同类）。
@@ -1706,6 +2414,22 @@ function registerJetHubEndpoints(
                * 重启 DSH。凭据不可用时如实抛错（让用户知道要去官方客户端登录）。
                */
               await zcode.refreshAccountCredential(entry.credentialRef, pool, entry.id)
+              break
+            case STEPCODE.id:
+              /**
+               * Step Code **没有 refresh 端点**（凭据是静态 api_key，与 Loomy /
+               * zcode / teleagent 同类）。
+               *
+               * 这里做的是**有效性探测**：`GET {apiBase}/v1/models` ——
+               * 与官方 `step login status` 同判据（发行包 `docs/step-integration.md`
+               * 原文：*"`step login status` validates the credential against that
+               * profile's `/v1/models`"*）。明确失效时抛「请重新登录」。
+               *
+               * ⚠️ **网络抖动 ≠ 凭据失效**：`probeCredential` 是三态的
+               * （true / false / undefined），只有 `false` 才抛终态错误 ——
+               * 否则一次断网就会让用户白白重登，且池里的账号被误标。
+               */
+              await stepcode.refreshAccountCredential(entry.credentialRef, pool, entry.id)
               break
             default:
               throw new Error(`Unknown provider: ${entry.provider}`)
@@ -1832,6 +2556,105 @@ function registerJetHubEndpoints(
               error: error instanceof Error ? error.message : String(error),
             } satisfies RpcSubmitSmsResponse,
           }
+        }
+      }
+
+      // ── TeleAgent 扩展动词（`teleagent.*`）───────────────────────────────
+      // 与 `antigravity.loginSubmitCode` 同型：本 provider 的登录产物
+      // **无法自动捕获**（回调地址是服务端常量、协议 scheme 无法注册），
+      // 故需要一个「用户粘贴回调 URL / token」的提交入口。
+      // 标准动词 `login.poll` 无需改动 —— 它靠「凭据是否已写入」判定，
+      // 本端点成功后凭据即落盘，轮询自然收敛。
+      case 'teleagent.loginSubmitCallback': {
+        const req = payload as { accountId?: unknown; callback?: unknown }
+        const accountId = typeof req.accountId === 'string' ? req.accountId : ''
+        const callback = typeof req.callback === 'string' ? req.callback : ''
+        if (accountId.length === 0) {
+          return { ok: false, error: { code: 'bad-request', message: 'accountId 必填' } }
+        }
+        const account = pool.findAccount(accountId)
+        if (account === undefined) {
+          return { ok: false, error: { code: 'bad-request', message: '账号不存在（可能已被删除或已超时）' } }
+        }
+        if (callback.trim().length === 0) {
+          return { ok: false, error: { code: 'bad-request', message: '请粘贴授权完成后的回调地址（或直接粘贴 token）' } }
+        }
+        try {
+          await teleagent.submitLogin(callback, {
+            refName: account.credentialRef,
+            accountId,
+            pool,
+          })
+          return { ok: true, value: { done: true } }
+        } catch (error) {
+          // ⚠️ 提交失败**不删除占位条目**：用户很可能只是粘贴不完整，
+          // 保留条目让他能重试（与 `login.submitSms` 的处置同因）。
+          // 只有 `startLogin` 的 10 分钟超时才会清占位（见 account.create 分支）。
+          return {
+            ok: true,
+            value: {
+              done: false,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          }
+        }
+      }
+
+      /**
+       * TeleAgent 浏览器自动登录（CDP 受控浏览器）。
+       *
+       * ⚠️ **必须立即返回**：用户要在弹出的窗口里输手机号 + 验证码，
+       * 一次登录几十秒到几分钟 —— 阻塞本 RPC 会撞上传输层超时，
+       * 前端还会显示「请求失败」而后台其实仍在跑。
+       * ⇒ fire-and-forget + 状态表，前端轮询 `loginBrowserStatus`。
+       * 这与本面板既有的「先返回 loginUrl、后台等提交」两步式同构。
+       */
+      case 'teleagent.loginWithBrowser': {
+        const req = payload as { accountId?: unknown }
+        const accountId = typeof req.accountId === 'string' ? req.accountId : ''
+        if (accountId.length === 0) {
+          return { ok: false, error: { code: 'bad-request', message: 'accountId 必填' } }
+        }
+        const account = pool.findAccount(accountId)
+        if (account === undefined) {
+          return { ok: false, error: { code: 'bad-request', message: '账号不存在（可能已被删除或已超时）' } }
+        }
+        if (teleagentBrowserLoginStates.get(accountId)?.phase === 'running') {
+          return { ok: true, value: { started: false, reason: 'already-running' } }
+        }
+        teleagentBrowserLoginStates.set(accountId, { phase: 'running', startedAt: Date.now() })
+        void teleagent.loginWithBrowser({
+          refName: account.credentialRef,
+          accountId,
+          pool,
+          onProgress: (message) => {
+            const entry = teleagentBrowserLoginStates.get(accountId)
+            if (entry !== undefined) entry.progress = message
+            ctx.logger.info(`[jet-hub] teleagent 自动登录 ${accountId}: ${message}`)
+          },
+        }).then(() => {
+          teleagentBrowserLoginStates.set(accountId, { phase: 'done', startedAt: Date.now() })
+        }).catch((error: unknown) => {
+          // ⚠️ **不删占位条目**：粘贴那条路仍然走得通（面板会自己恢复入口），
+          // 删掉就等于把用户唯一的退路也拿走。
+          const reason = error instanceof TeleagentBrowserLoginError ? error.reason : 'error'
+          ctx.logger.warn(`[jet-hub] teleagent 自动登录失败 ${accountId}（${reason}）：${String(error)}`)
+          teleagentBrowserLoginStates.set(accountId, {
+            phase: 'failed',
+            startedAt: Date.now(),
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+        return { ok: true, value: { started: true } }
+      }
+
+      case 'teleagent.loginBrowserStatus': {
+        const req = payload as { accountId?: unknown }
+        const accountId = typeof req.accountId === 'string' ? req.accountId : ''
+        return {
+          ok: true,
+          value: { status: teleagentBrowserLoginStates.get(accountId) ?? { phase: 'idle' } },
         }
       }
 
@@ -2425,6 +3248,24 @@ function registerJetHubEndpoints(
           )
           return { ok: true, value: { accounts: value } satisfies RpcCreditsStatusResponse }
         }
+        if (req.provider === TELEAGENT.id) {
+          // TeleAgent **有**独立的签到状态端点
+          //（`GET /user/portal/companyStore/v2/checkDayTask`），故与 minimax 同型
+          // 走共享 helper 真查。
+          //
+          // ⚠️ 判据是 `daily_task.claimed_today`（客户端截图「今日已领」的按钮
+          // 禁用依据），且 `active` 恒 true（拿到响应即 true）—— 否则会把
+          // 「今天已领」误报成「签到活动未开启」（Qoder 同型缺陷）。
+          const teleagentStatusAccounts = await pool.listAccounts(req.provider)
+          const value = await collectCreditsStatus<TeleagentCredential, undefined>(
+            teleagentStatusAccounts, undefined, {
+              resolve: (ref) => ctx.credentials.resolve(ref),
+              fetchStatus: (credential) => fetchTeleagentCheckinStatus(credential),
+              warn: (msg) => ctx.logger?.warn?.(msg),
+            },
+          )
+          return { ok: true, value: { accounts: value } satisfies RpcCreditsStatusResponse }
+        }
         const product = productById(req.provider)
         if (product === undefined) {
           return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
@@ -2438,224 +3279,59 @@ function registerJetHubEndpoints(
       }
 
       // 一键领取：逐账号顺序执行（并发易触发风控），单个账号失败不中断整体。
+      //
+      // ⚠️ 实现已抽到模块级 `claimAllForProvider()` —— **每日自动签到跑的是
+      // 同一个函数**（`src/auto-checkin-controller.ts` 注入的 `claim`）。
+      // 本 case 只负责两件事：把 RPC 的依赖形状翻译成函数参数、把
+      // `UnsupportedClaimProviderError` 转成规范的 `bad-request`。
       case 'credits.claimAll': {
         const req = payload as RpcCreditsClaimAllRequest
-        const accounts = await pool.listAccounts(req.provider)
-        if (isQoderFamily(req.provider)) {
-          const { product } = requireQoderFamily(req.provider)
-          // Qoder 的领取流程**自带活动列表查询**（loadCampaigns → 逐个 claim），
-          // 故 precheckStatus: false 跳过外部那次检查 —— 否则会重复发一次 GET
-          // （与 LobsterAI 传 false 的理由同类）。
-          //
-          // ⚠️ Qoder 的幂等判据是响应体的 `replayed:true`（重复领取同样返回
-          // HTTP 200），已在 claimQoderCampaign 内部处理。
-          const value = await collectClaimResults<QoderCredential, undefined>(accounts, undefined, {
+        try {
+          const value = await claimAllForProvider(req.provider, {
+            pool,
             resolve: (ref) => ctx.credentials.resolve(ref),
-            claim: (credential) => claimQoderDailyCheckin(credential, product),
-            precheckStatus: false,
+            lobsterai,
+            loomy,
+            zcode,
             warn: (msg) => ctx.logger?.warn?.(msg),
           })
           return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
+        } catch (error) {
+          // 不支持的 provider（cline / raccoon / 未知 id）如实回 bad-request，
+          // 与重构前各分支的行为一致；其余异常照旧冒泡成 handler-failed。
+          if (!(error instanceof UnsupportedClaimProviderError)) throw error
+          return { ok: false, error: { code: error.code, message: error.message } }
         }
-        if (req.provider === 'codearts') {
-          // CodeArts（华为云）走**签名**协议，与两个腾讯系 provider 都不同源：
-          // 领取流程自带「账户类型 + 活动列表」预检（见 claimCodeArtsDailyCheckin），
-          // 故 precheckStatus: false 跳过外部那次 CodeBuddy 式的状态查询 ——
-          // 用 fetchCheckinStatus 打华为端点既发错请求又必然失败。
-          const value = await collectClaimResults<CodeArtsCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            claim: (credential) => claimCodeArtsDailyCheckin(credential),
-            precheckStatus: false,
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === LOBSTERAI.id) {
-          // LobsterAI 的 clientVersion 是签到必填参数，需动态解析
-          //（带缓存，通常无额外网络开销）。
-          const clientVersion = await lobsterai.resolveClientVersion()
-          const value = await collectClaimResults(accounts, LOBSTERAI, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            claim: (credential, product) =>
-              claimLobsteraiDailyCheckin(credential, product, clientVersion),
-            // 领取流程内部已做 slot/context 预检，不需要外部再查一次状态。
-            precheckStatus: false,
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === TRAE.id) {
-          const value = await collectClaimResults<TraeCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
-            //
-            // TRAE 的 claim 对「今天已签到」是**幂等**的：实测重复领取同样返回
-            // `{code:0, message:"success"}`，与真正领取成功**无法区分**。
-            // 早期照抄 LobsterAI 传了 `precheckStatus: false`（那是「领取流程内部
-            // 已做 slot/context 预检」的理由，TRAE 没有这回事），于是已签到的账号
-            // 被报成「领取成功」（用户报障：显示成功但 +0 积分）。
-            // 判据只能是 status 端点的 `checked_in`。
-            fetchStatus: (credential) =>
-              fetchTraeCheckinStatus(credential as TraeCredential, TRAE, fetch),
-            claim: (credential, _product, entry) =>
-              claimTraeDailyCheckin(
-                credential as TraeCredential,
-                TRAE,
-                fetch,
-                pool.traeCheckinDeviceGenerationFor(entry.id),
-                (next) => pool.updateTraeCheckinDeviceGeneration(entry.id, next),
-              ),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === LOOMY.id) {
-          // Loomy 的「签到」= `POST /points/first-login`（触发每日赠送额度）。
-          // ⚠️ 语义**不是**「+5000 积分」：`dailyBalance = dailyQuota - dailyConsumed`，
-          // 消耗后不回补。文案由 claimLoomyDailyQuota 的 already-claimed 表达。
-          // 领取流程自带幂等判据（`alreadyProcessed`），故不做额外预检。
-          const values: RpcCreditsClaimAccountResult[] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            if (!resolved) {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                outcome: { kind: 'failed', code: -1, message: '凭据未配置' },
-              })
-              continue
-            }
-            let credential: LoomyCredential
-            try {
-              credential = JSON.parse(resolved.value) as LoomyCredential
-            } catch {
-              values.push({
-                accountId: account.id, nickname: account.nickname,
-                outcome: { kind: 'failed', code: -1, message: '凭据解析失败' },
-              })
-              continue
-            }
-            const outcome = await loomy.claimDailyQuota(credential)
-            values.push({ accountId: account.id, nickname: account.nickname, outcome })
-          }
-          return {
-            ok: true,
-            value: {
-              summary: computeClaimSummary(values.map((v) => v.outcome)),
-              results: values,
-            } satisfies RpcCreditsClaimAllResponse,
-          }
-        }
-        if (req.provider === CLINE.id) {
-          // Cline **没有签到端点**（见 src/cline-credits.ts 的模块注释：
-          // 对整个 sidecar 做字符串扫描，无任何 checkin/campaign 业务端点）。
-          // 客户端按能力矩阵（`credits-capabilities.js` 的
-          // `cline: { balance: true, dailyCheckin: false }`）根本不会渲染
-          // 「一键领取积分」按钮、也不会发起本调用；这里显式返回可读错误，
-          // 而不是落到下面 `productById` 的 `unsupported provider` 泛化文案
-          // —— 后者会让排查者以为是「provider 没注册」，而真相是「该产品无此能力」。
+      }
+
+      // ── 每日自动签到（开关 + 上次结果）──
+      //
+      // 与 `credits.claimAll` 的分工：后者是**用户点按钮**触发的一次领取；
+      // 这里读写一份**跨进程持久化的状态**（开关 / 当天是否已签完 / 上次逐渠道
+      // 结果），由 host 在「打开 DSH 时」自行消费（见 `src/index.ts`）。
+      //
+      // ⚠️ 面板**不通过这里触发签到**：那会让「渲染一次面板」变成可能产生十路
+      // 写请求的动作。触发时机归 host，客户端只读快照、只写开关。
+      case 'checkin.auto.get': {
+        if (autoCheckin === undefined) return autoCheckinUnavailable()
+        return { ok: true, value: autoCheckin.read() satisfies AutoCheckinStatusSnapshot }
+      }
+
+      case 'checkin.auto.set': {
+        if (autoCheckin === undefined) return autoCheckinUnavailable()
+        const req = payload as RpcAutoCheckinSetRequest
+        // ⚠️ 严格判 `typeof === 'boolean'`：真 / 假值强转会造出「字符串 `'false'`
+        // 也把开关打开」这类无法解释的行为，而本开关控制的是**真实写请求**。
+        if (typeof req?.enabled !== 'boolean') {
           return {
             ok: false,
-            error: {
-              code: 'bad-request',
-              message: 'Cline 不支持每日签到（其后端没有签到接口）',
-            },
+            error: { code: 'bad-request', message: 'checkin.auto.set 需要布尔字段 enabled' },
           }
         }
-        if (req.provider === RACCOON.id) {
-          // raccoon **没有签到端点**：每日 300 积分由服务端按日自动发放
-          //（账单里的 `daily_grant`，实测注册后 1 分钟即到账），
-          // 客户端按能力矩阵（`raccoon: { balance: true, onboardingTasks: true }`，
-          // **无** `dailyCheckin`）根本不会渲染「一键领取积分」按钮、也不会发起本调用。
-          // 这里显式返回可读错误，而不是落到下面 `productById` 的
-          // `unsupported provider` 泛化文案 —— 后者会让排查者以为是
-          //「provider 没注册」，而真相是「该产品无此能力」。
-          return {
-            ok: false,
-            error: {
-              code: 'bad-request',
-              message: 'Raccoon Work 不支持每日签到（每日积分由服务端自动发放；登录奖励请在「新手任务」中领取）',
-            },
-          }
+        return {
+          ok: true,
+          value: await autoCheckin.setEnabled(req.enabled) satisfies AutoCheckinStatusSnapshot,
         }
-        if (req.provider === MINIMAX.id) {
-          // ⚠️ **必须开启状态预检**（`precheckStatus` 默认为 true，不要传 false）。
-          //
-          // 理由与 TRAE 那条同型（见上方 TRAE 分支的详细注释）：MiniMax 的
-          // `claimMinimaxDailyCheckin` 靠响应体的 `claim_result` 判幂等
-          //（`1`=真领取、`2`=已领过），这在 **HTTP 层**是可靠的；但状态预检是
-          // 第二道防线 —— 若某天服务端对已领账号也回 `claim_result: 1`，
-          // 预检能靠 `todayCheckedIn` 先挡住，避免把「今天已领」报成「+积分」。
-          // 反之传 false 会让已签到账号走到 claim 请求（多发一次 POST）。
-          const value = await collectClaimResults<MinimaxCredential, undefined>(accounts, undefined, {
-            resolve: (ref) => ctx.credentials.resolve(ref),
-            fetchStatus: (credential) => fetchMinimaxSigninStatus(credential),
-            claim: (credential) => claimMinimaxDailyCheckin(credential),
-            warn: (msg) => ctx.logger?.warn?.(msg),
-          })
-          return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
-        }
-        if (req.provider === ZCODE.id) {
-          /**
-           * ZCode 的「一键领取」= 补激活上报 → preview → 逐个 claim。
-           *
-           * ⚠ **每个 plan 都要重新产一个 captcha**（captcha 一次性，
-           * 复用会得 `3007`）—— 故不能复用 `collectClaimResults`
-           * 那套「一个凭据一次 claim」的形状（它假设 `claim()` 内部
-           * 自己处理幂等），这里自己遍历账号与 plan。
-           *
-           * ⚠ ZCode **没有**独立的「今日是否已领」端点，故不调
-           * `precheckStatus`（`claimDailyWith` **自带**激活上报与
-           * preview 查询，重复调用只会多发一次无谓请求）。
-           */
-          const results: RpcCreditsClaimAllResponse['results'] = []
-          const outcomes: ClaimOutcome[] = []
-          for (const account of accounts) {
-            const resolved = await ctx.credentials.resolve(credentialRef(account.credentialRef))
-            let accountOutcomes: ClaimOutcome[]
-            if (!resolved) {
-              accountOutcomes = [{ kind: 'failed', code: -1, message: '凭据未配置' }]
-            } else {
-              let credential: ZcodeCredential | undefined
-              try {
-                credential = JSON.parse(resolved.value) as ZcodeCredential
-              } catch {
-                credential = undefined
-              }
-              if (credential === undefined) {
-                accountOutcomes = [{ kind: 'failed', code: -1, message: '凭据解析失败' }]
-              } else {
-                /**
-                 * captcha 回调：每次都现产一个新 param。
-                 * 缺浏览器时抛错由 `claimDailyFor` 内部转成可读的
-                 * failed outcome（不让整个端点失败）。
-                 */
-                accountOutcomes = await zcode.claimDailyFor(credential, async () => {
-                  const config = await zcode.fetchCaptchaConfig().catch(() => undefined)
-                  return await zcode.mintCaptcha(config)
-                })
-              }
-            }
-            // ⚠ 一个账号可能有多条 outcome（多个 plan）——
-            // `RpcCreditsClaimAccountResult` 只装一条，故逐条展开。
-            for (const outcome of accountOutcomes) {
-              results.push({ accountId: account.id, nickname: account.nickname, outcome })
-              outcomes.push(outcome)
-            }
-          }
-          return {
-            ok: true,
-            value: { results, summary: computeClaimSummary(outcomes) } satisfies RpcCreditsClaimAllResponse,
-          }
-        }
-        const product = productById(req.provider)
-        if (product === undefined) {
-          return { ok: false, error: { code: 'bad-request', message: `unsupported provider: ${req.provider}` } }
-        }
-        const value = await collectClaimResults(accounts, product, {
-          resolve: (ref) => ctx.credentials.resolve(ref),
-          warn: (msg) => ctx.logger?.warn?.(msg),
-        })
-        return { ok: true, value: value satisfies RpcCreditsClaimAllResponse }
       }
 
       // 积分余额（Credits Balance）：逐账号顺序查询。
@@ -2695,6 +3371,22 @@ function registerJetHubEndpoints(
             },
             warn: (msg) => ctx.logger?.warn?.(msg),
           })
+          return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
+        }
+        if (req.provider === TELEAGENT.id) {
+          // 余额来自 `GET /user/portal/companyStore/userCenter` 的
+          // **`current_points_balance`**（客户端截图「积分余额 6100.00」的字段，
+          // 由 asar `hxe` 组件逐字读出 —— 见 `src/teleagent-credits.ts` 模块头）。
+          //
+          // ⚠️ 取不到该字段时 `fetchTeleagentCreditBalance` 返回 `null`
+          //（= 查询失败）而**不是 0** —— 报 0 会让用户以为积分被清零。
+          const values = await collectCreditBalances<TeleagentCredential, undefined>(
+            accounts, undefined, {
+              resolve: (ref) => ctx.credentials.resolve(ref),
+              fetchBalance: (credential) => fetchTeleagentCreditBalance(credential),
+              warn: (msg) => ctx.logger?.warn?.(msg),
+            },
+          )
           return { ok: true, value: { accounts: values } satisfies RpcCreditsBalancesResponse }
         }
         if (req.provider === LOBSTERAI.id) {

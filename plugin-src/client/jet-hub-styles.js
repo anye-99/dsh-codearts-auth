@@ -58,10 +58,22 @@ const STYLES = `
    ⚠️ 本文件的样式整体是一个模板字符串 —— 注释里**不能出现反引号**（会提前终止）。 */
 .dim-jh-providerIcon.minimax { background: white; }
 /*
+ * TeleAgent（星辰超级智能体，中国电信天翼 AI）：官方 logo 是蓝紫渐变的
+ * 立体 A 字 + 星标，四角全透明（实测 75% 像素 alpha=0）、本身即完整图形，
+ * 同 zcode / antigravity —— 容器保持透明，加白底会多出一圈突兀的白边。
+ */
+.dim-jh-providerIcon.teleagent { background: transparent; }
+/*
  * ZCode（智谱）：图标自带深色圆角底 + 青色 Z，本身即完整图形，
  * 故容器保持透明（加白底反而会出现一圈突兀的方块）。
  */
 .dim-jh-providerIcon.zcode { background: transparent; }
+/*
+ * Step Code（阶跃星辰）：自绘 SVG 自带深色圆角底 + 蓝色递升折线，
+ * 本身即完整图形，同 zcode / antigravity —— 容器保持透明，
+ * 加白底会多出一圈突兀的方块边。
+ */
+.dim-jh-providerIcon.stepcode { background: transparent; }
 /*
  * Antigravity（Google）：SVG 自带蓝紫渐变圆角底 + 白色上升体，同 zcode ——
  * 完整图形，容器保持透明，加白底会多出一圈白边。
@@ -117,8 +129,15 @@ const STYLES = `
 .dim-jh-agy-formGroup { display: grid; gap: 6px; }
 .dim-jh-agy-formLabel { font-size: 12px; font-weight: 500; color: var(--dsw-alias-label-secondary, #646a73); }
 
-.dim-jh-agy-cards { display: grid; gap: 10px; }
-.dim-jh-agy-cards .dim-jh-accountCard { margin-bottom: 0; }
+/*
+ * ⚠️ 这里曾有 .dim-jh-agy-cards（display: grid; gap: 10px）+
+ * .dim-jh-agy-cards .dim-jh-accountCard { margin-bottom: 0 } 两条规则 ——
+ * 它是**只有 Antigravity 有**的第二套账号列表布局，卡片宽度因此不受共享
+ * 样式单独决定，与其他 13 家不一致（用户报障：卡片偏宽）。2026-10-13 已删：
+ * 账号列表改用与 ProviderPanel 相同的「无类名 div + 卡片自身 margin-bottom」
+ * 结构。**不要再为 Agy 加卡片容器类**，需要改间距请改共享卡片本身。
+ * ⚠️ 本文件整体是一个模板字符串，注释里**不能出现反引号**（会提前终止字符串）。
+ */
 .dim-jh-agy-extra { display: grid; gap: 6px; margin-bottom: 6px; }
 .dim-jh-agy-cardHead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 
@@ -271,6 +290,17 @@ const STYLES = `
 .dim-jh-probeNotice[data-tone="error"] { border-color: color-mix(in srgb, #d93025 35%, var(--dsw-alias-border-l2, #eef0f3)); background: rgb(217 48 37 / 8%); color: #b3261e; }
 .dim-jh-probeDetails { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 2px; }
 .dim-jh-probeDetails li { font-size: 12px; line-height: 18px; }
+/*
+ * TeleAgent 的「粘贴授权回调地址」输入框（该面板唯一的非全自动登录路径）。
+ * 与 .dim-jh-input 同族，只是多行、可横向拖动，且用等宽字体 ——
+ * 用户粘的是 URL，等宽能看清 code= 与 token= 的分界，也便于发现被截断的尾部。
+ */
+.dim-jh-textarea { box-sizing: border-box; width: 100%; padding: 6px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-primary); font-family: var(--dsw-font-code, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); resize: vertical; }
+.dim-jh-textarea:focus { outline: none; border-color: #1677ff; box-shadow: 0 0 0 2px color-mix(in srgb, #1677ff 20%, transparent); }
+.dim-jh-textarea::placeholder { color: var(--dsw-alias-label-dimmed); font-family: inherit; }
+.dim-jh-textarea:disabled { opacity: 0.6; }
+/* 粘贴提交失败时的提示行（沿用 probeNotice 的 error 配色，保持同一语言）。 */
+.dim-jh-textareaError { margin-top: 6px; font-size: 12px; line-height: 18px; color: #b3261e; }
 
 /* 登录弹窗 */
 .dim-jh-loginOverlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 1000; }

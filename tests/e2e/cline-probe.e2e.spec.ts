@@ -126,14 +126,16 @@ suite('Cline 只读探针（不发模型请求、不续期）', () => {
     console.log(`  ${parsed.clinePass.length} 个：${parsed.clinePass.slice(0, 4).map((e) => e.id).join(', ')}…`)
 
     expect(parsed.free.length, '远端应至少下发一个免费模型').toBeGreaterThan(0)
-    // 截图里的 5 个应当都在（若某个被下线，本断言会失败并提示需同步兜底表）
+    // 远端当前下发的免费集合（2026-10-09 实测）。若某个被下线，本断言会失败
+    // 并提示需同步兜底表 —— 那正是它的用途。
+    // ⚠️ 旧的 space-bunny-alpha / deepseek-v4.1-flash / gemini-3.8-flash
+    // 已实测下线（404 / 上游无端点），见 src/cline-product.ts 的注释。
     const freeIds = new Set(parsed.free.map((entry) => entry.id))
     for (const id of [
-      'stealth/space-bunny-alpha',
       'cline-free/mimo-v2.6-flash',
-      'cline-free/deepseek-v4.1-flash',
-      'cline-free/gemini-3.8-flash',
       'cline-free/muse-spark-1.3-contributor',
+      'cline-free/step-5-preview',
+      'cline-free/solar-mini4',
     ]) {
       expect(freeIds.has(id), `免费模型 ${id} 已不在远端 free 数组中（需更新兜底表与文档）`).toBe(true)
     }
@@ -178,12 +180,17 @@ suite('Cline 只读探针（不发模型请求、不续期）', () => {
     expect(models.length).toBeGreaterThan(0)
     expect(free.length).toBeGreaterThan(0)
 
-    // 核心不变式：`cline-free/deepseek-v4.1-flash`（免费）与
-    // `deepseek/deepseek-v4.1-flash`（按量计费）是两个不同实体，绝不可混判。
+    // 核心不变式：`cline-free/mimo-v2.6-flash`（免费）与
+    // `xiaomi/mimo-v2.6-flash`（按量计费）是两个不同实体，绝不可混判。
     const byId = new Map(models.map((model) => [model.id, model]))
-    expect(byId.get('cline-free/deepseek-v4.1-flash')?.isFree).toBe(true)
-    if (byId.has('deepseek/deepseek-v4.1-flash')) {
-      expect(byId.get('deepseek/deepseek-v4.1-flash')?.isFree, '付费同名模型被误标为免费').toBe(false)
+    expect(byId.get('cline-free/mimo-v2.6-flash')?.isFree).toBe(true)
+    if (byId.has('xiaomi/mimo-v2.6-flash')) {
+      expect(byId.get('xiaomi/mimo-v2.6-flash')?.isFree, '付费同名模型被误标为免费').toBe(false)
+    }
+    // ⚠️ 已下线的旧免费 id **不得**再被播报为「免费」（否则用户选中必然 404）——
+    // 这条同时锁死「兜底表已删掉它们」这一更新。
+    for (const gone of ['cline-free/deepseek-v4.1-flash', 'cline-free/gemini-3.8-flash', 'stealth/space-bunny-alpha']) {
+      expect(byId.get(gone)?.isFree ?? false, `${gone} 已下线，不该再被播报为免费`).toBe(false)
     }
   })
 

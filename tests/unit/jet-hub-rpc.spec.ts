@@ -653,7 +653,13 @@ describe('account.create 必须立即返回 loginUrl（两步式登录回归）'
       makeAuth('cline') as never,
       {} as never, // loomy（本组用例不触发）
       {} as never, // raccoon（本组用例不触发）
+      // ⚠️ 该调用点此前只补到「zcode」，而签名里 minimax / teleagent 排在它**之前**
+      // —— 那最后一个 `{}` 其实落在 teleagent 槽位上。补 stepcode 时一并补齐，
+      // 错位的占位不会报错，只会静默用错。
+      {} as never, // minimax（本组用例不触发）
+      {} as never, // teleagent（本组用例不触发）
       {} as never, // zcode（本组用例不触发）
+      {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
 
@@ -734,7 +740,23 @@ describe('account.create 必须立即返回 loginUrl（两步式登录回归）'
       },
     }
     // ⚠️ 位置参数：`qoderCn` 槽位补 `{}`（本用例只走 codearts，不触发它）。
-    registerJetHubRpc(ctx as never, pool as never, auth as never, {} as never, {} as never, {} as never, {} as never, {} as never, /* qoderCn */ {} as never, {} as never, {} as never, undefined)
+    // 逐个补齐到 stepcode（第 16 个实参）—— 少补的占位不会报错，只会
+    // **静默**落到别的 provider 槽位上（本仓库已因此踩过五次）。
+    registerJetHubRpc(
+      ctx as never, pool as never,
+      auth as never, // codearts
+      {} as never, {} as never, // buddy / workbuddy
+      {} as never, // lobsterai
+      {} as never, {} as never, // qoder / qoderCn
+      {} as never, // trae
+      {} as never, // cline
+      {} as never, // loomy
+      {} as never, // raccoon
+      {} as never, // minimax
+      {} as never, // teleagent
+      {} as never, // zcode
+      {} as never, // stepcode
+    )
     const response = await handler!(new Request('http://localhost/api/jet-hub', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -796,6 +818,12 @@ describe('account.create 必须立即返回 loginUrl（两步式登录回归）'
       {} as never, // cline
       {} as never, // loomy
       {} as never, // raccoon
+      // 补齐 trae 之后的四个占位（minimax / teleagent / zcode / stepcode）——
+      // 缺一个不会报错，只会让 `failingAuth` 落错位置（本仓库踩过五次）。
+      {} as never, // minimax
+      {} as never, // teleagent
+      {} as never, // zcode
+      {} as never, // stepcode
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
 
@@ -980,7 +1008,12 @@ describe('model.list / model.setDisabled 端点', () => {
       {} as never, // loomy
       {} as never, // raccoon
       {} as never, // minimax
+      {} as never, // teleagent（2026-10-07 新增，插在 minimax 与 zcode 之间）
       {} as never, // zcode（2026-09-29 新增，紧随 raccoon）
+      // ⚠️ **这处不能漏**：`modelAdapters` 在签名里是**最后一个**形参，
+      // 少补一个占位就会让它错位落到 auth 形参上 —— 症状正是
+      // 「关闭的模型仍显示带倍率的展示名」用例失败（展示名退化成裸 id）。
+      {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
       undefined, // antigravity（2026-10-02 对齐：服务形参可缺省 ⇒ 分支回「不可用」）
       options.modelAdapters as never,
     )
@@ -2021,7 +2054,9 @@ describe('provider.status / provider.setEnabled 端点', () => {
       {} as never, // loomy
       {} as never, // raccoon
       {} as never, // minimax
+      {} as never, // teleagent（2026-10-07 新增，插在 minimax 与 zcode 之间）
       {} as never, // zcode
+      {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
       undefined, // antigravity（服务形参可缺省 ⇒ 分支回「不可用」）
       (adapter !== undefined ? { buddy: adapter } : undefined) as never,
     )
@@ -2427,7 +2462,9 @@ describe('subscriptionQuota.get / subscriptionQuota.requestLog 端点', () => {
       {} as never, // loomy
       {} as never, // raccoon
       {} as never, // minimax
+      {} as never, // teleagent（2026-10-07 新增，插在 minimax 与 zcode 之间）
       {} as never, // zcode
+      {} as never, // stepcode（2026-10-09 新增，插在 zcode 与 antigravity 之间）
       options.agy as never, // antigravity（订阅额度的 agy 路径；省略=缺席）
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')

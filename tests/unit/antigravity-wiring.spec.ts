@@ -52,10 +52,22 @@ describe('宿主侧装配（src/index.ts）', () => {
    * `registerJetHubRpc` 的参数表数不出第 14 家，占位错位的复发土壤。
    */
   it('agyService 作为 registerJetHubRpc 的实参传入（在 modelAdapters 之前）', () => {
-    expect(index).toMatch(/registerJetHubRpc\([\s\S]*?zcode, agyService, modelAdapters/)
-    // 调用保持**单行**：拆行会让 wiring 类用例的正则失配（AGENTS.md 格式陷阱）。
+    /**
+     * ⚠️ 这条断言**不写死整串**（2026-10-09 改成顺序断言）：原文写的是
+     * `registerJetHubRpc([\s\S]*?zcode, agyService, modelAdapters`，接入
+     * stepcode 后调用变成 `…, zcode, stepcode, agyService, modelAdapters`，
+     * 正则立刻失配 —— 而「第 15 个面板插在哪」跟 antigravity 的契约无关。
+     * 改为断言**顺序关系**，对新增 provider 中立（AGENTS.md「位置参数陷阱」：
+     * 加 provider 时不要把整串写死，否则每次接入都要回来改断言）。
+     */
     const callLine = index.split('\n').find(line => line.trim().startsWith('registerJetHubRpc('))
     expect(callLine, 'registerJetHubRpc 调用必须单行').toBeDefined()
+    // ⚠️ 先剥掉行尾右括号再 split —— 否则最后一个参数是 `modelAdapters)`，
+    // `indexOf('modelAdapters')` 会返回 -1，`toBeLessThan(-1)` 恒失败
+    //（首次改写这条断言时实测踩到）。
+    const args = (callLine ?? '').replace(/\)\s*$/, '').split(',').map((s) => s.trim())
+    expect(args.indexOf('agyService')).toBeGreaterThan(args.indexOf('zcode'))
+    expect(args.indexOf('agyService')).toBeLessThan(args.indexOf('modelAdapters'))
   })
 
   it('antigravity 适配器登记进 modelAdapters（显示列表的全量目录来源）', () => {
@@ -125,8 +137,21 @@ describe('RPC 分派（src/jet-hub-rpc.ts）：标准动词承载 agy', () => {
 
   it('registerJetHubRpc / registerJetHubEndpoints 都有 antigravity 形参', () => {
     expect(rpc).toContain('antigravity?: AntigravityService')
-    // 两处转调链都要带上它（漏一处 = 形参收到 undefined 的静默错位）。
-    expect(rpc).toMatch(/registerJetHubEndpoints\(\s*\n?\s*connectionCtx as Context, pool, codearts,[\s\S]*?zcode, antigravity, modelAdapters,/)
+    /**
+     * 两处转调链都要带上它（漏一处 = 形参收到 undefined 的静默错位）。
+     *
+     * ⚠️ **断言改成顺序关系，不写死整串**（2026-10-09）：原文写的是
+     * `…zcode, antigravity, modelAdapters,`，接入 stepcode 后变成
+     * `…zcode, stepcode, antigravity, modelAdapters,` ⇒ 正则失配。
+     * 「第 15 个面板插在哪」与 antigravity 的契约无关，故只钉死
+     * 「antigravity 排在 zcode 之后、modelAdapters 之前」这两个真关系 ——
+     * 对将来新增 provider 中立（AGENTS.md「位置参数陷阱」要求的写法）。
+     */
+    const fwd = /registerJetHubEndpoints\(\s*\n?\s*connectionCtx as Context, pool, codearts,([\s\S]*?)\)/.exec(rpc)
+    expect(fwd, 'registerJetHubEndpoints 转调未找到').not.toBeNull()
+    const args = (fwd?.[1] ?? '').split(',').map((s) => s.trim())
+    expect(args.indexOf('antigravity')).toBeGreaterThan(args.indexOf('zcode'))
+    expect(args.indexOf('antigravity')).toBeLessThan(args.indexOf('modelAdapters'))
   })
 
   /**
@@ -337,7 +362,10 @@ describe('客户端（plugin-src/client/）', () => {
     expect(client).not.toMatch(/rpcCall\('cline\.requestLog'/)
   })
 
-  it('PROVIDERS 第 13 条仍是 antigravity（对齐不动面板归属）', () => {
+  it('PROVIDERS 末条仍是 antigravity（对齐不动面板归属）', () => {
+    // ⚠️ 标题原先写「第 13 条」—— 2026-10-07 接入 teleagent 后它仍是**末条**，
+    // 但序号已变（14）。本用例的判据从来是「这条目存在且形状未变」，
+    // 不是下标，故改成「末条」表述，避免序号漂移让标题说谎。
     expect(client).toMatch(/\{ id: 'antigravity', label: 'Antigravity \(Google\)'/)
   })
 })

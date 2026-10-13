@@ -1,9 +1,15 @@
-﻿// AuthHelper (spec ADR-11): in-GUI Google OAuth without a terminal. A tiny
+// AuthHelper (spec ADR-11): in-GUI Google OAuth without a terminal. A tiny
 // probe spawn of the real agy binary prints the consent URL (no TTY) and
 // waits on stdin for the pasted authorization code; we surface the URL to
 // the client panel and pipe the code back. We never read, write, copy, or
 // move the OAuth token file itself — the official binary owns credentials.
-import { extractAuthUrl, looksLikeAuthFailure } from './types.js'
+import {
+  AGY_MODELS_SPAWN_TIMEOUT_MS,
+  AGY_PROBE_KNOWN_TTL_MS,
+  AGY_PROBE_UNKNOWN_TTL_MS,
+  extractAuthUrl,
+  looksLikeAuthFailure,
+} from './types.js'
 import { openBrowser } from './oauth.js'
 import { isolatedHomeEnv, probeProcess, startAgyProcess, type RunningProcess } from './runner.js'
 
@@ -43,17 +49,21 @@ export class AuthHelper {
 
   /**
    * Ground-truth login probe: `agy models` succeeds only when signed in and
-   * prints a sign-in error otherwise. Cached for 60s; in-flight calls share
-   * one spawn. Returns true/false, or null when undeterminable (no binary,
-   * spawn failure, ambiguous output). While a login flow is active the
-   * in-memory phase wins and the probe is skipped.
+   * prints a sign-in error otherwise. Cached (60s for a definite answer, 15s
+   * for null — see `AGY_PROBE_*_TTL_MS`); in-flight calls share one spawn.
+   * Returns true/false, or null when undeterminable (no binary, spawn failure,
+   * ambiguous output). While a login flow is active the in-memory phase wins
+   * and the probe is skipped.
    */
   async probeSignedIn(force = false, homeDir?: string): Promise<boolean | null> {
     if (this.state.phase === 'pending' || this.state.phase === 'submitting') return null
     if (this.state.phase === 'ok' && !homeDir) return true
     const now = Date.now()
-    if (!force && !homeDir && this.signedInCache !== null && now - this.signedInCache.at < 60_000) {
-      return this.signedInCache.value
+    if (!force && !homeDir && this.signedInCache !== null) {
+      // ⚠️ null（判不出）用短 TTL：它多半是「预算耗尽 / agy 被资格校验拖慢」这类
+      // 会很快自愈的中间态，沿用 60s 会把登录门控在 unknown 上多卡一分钟。
+      const ttl = this.signedInCache.value === null ? AGY_PROBE_UNKNOWN_TTL_MS : AGY_PROBE_KNOWN_TTL_MS
+      if (now - this.signedInCache.at < ttl) return this.signedInCache.value
     }
     if (this.signedInFlight !== null && !homeDir) return this.signedInFlight
     const bin = this.bin()
@@ -62,7 +72,7 @@ export class AuthHelper {
       let value: boolean | null = null
       try {
         const env = homeDir ? { ...process.env, HOME: homeDir } : process.env
-        const out = await probeProcess(bin, ['models'], 15_000, undefined, env)
+        const out = await probeProcess(bin, ['models'], AGY_MODELS_SPAWN_TIMEOUT_MS, undefined, env)
         const tail = out.stderrTail + '\n' + out.stdout.slice(0, 2000)
         if (out.code === 0 && !looksLikeAuthFailure(out.stdout)) value = true
         else if (out.code !== 0 && looksLikeAuthFailure(tail)) value = false

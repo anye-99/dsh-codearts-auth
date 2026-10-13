@@ -29,22 +29,39 @@ describe('Loomy 产品配置', () => {
     expect(LOOMY.defaultCredentialRef).toBe('LOOMY_ACCESS_TOKEN')
   })
 
-  it('兜底模型表覆盖 8 个 chat 模型、id 唯一', () => {
+  it('兜底模型表覆盖 9 个 chat 模型、id 唯一', () => {
+    // ⚠️ 2026-10-09：远端共 13 条（chat 10，含聚合入口 `auto`），
+    // 兜底表收录其中的 9 个真实模型（`auto` 是聚合入口，不收录）。
     const ids = LOOMY.fallbackModels.map((m) => m.id)
-    expect(ids).toHaveLength(8)
-    expect(new Set(ids).size).toBe(8)
-    // 与实测远端 chat 集合逐一对齐
+    expect(ids).toHaveLength(9)
+    expect(new Set(ids).size).toBe(9)
+    // 与实测远端 chat 集合逐一对齐（不含 `auto`）
     expect([...ids].sort()).toEqual([
-      'GLM-5.3-Flash', 'Kimi-k2.6', 'MiniMax-M3', 'deepseek-v4-flash-0731',
-      'mimo-v2.5', 'qwen-3.8-max', 'qwen3.8-flash', 'spark-x',
+      'DeepSeek-V4.1-Flash', 'GLM-5.3-Flash', 'Kimi-k2.6', 'MiniMax-M3',
+      'deepseek-v4-flash-0731', 'mimo-v2.5', 'qwen-3.8-max', 'qwen3.8-flash', 'spark-x',
     ].sort())
+  })
+
+  it('2026-10-09 新增 DeepSeek-V4.1-Flash（远端 is_default_model）', () => {
+    const byId = new Map(LOOMY.fallbackModels.map((m) => [m.id, m]))
+    const added = byId.get('DeepSeek-V4.1-Flash')
+    expect(added).toBeDefined()
+    expect(added!.name).toBe('DeepSeek V4.1 Flash · x2.0')
+    expect(added!.contextWindow).toBe(1_048_576)
+  })
+
+  it('不含聚合入口 auto（与 buddy 的 isAutoSelectAlias 同型）', () => {
+    // `auto`（`自动 · 均衡`）缺全部能力元数据，是自动选模入口而非真实模型。
+    expect(LOOMY.fallbackModels.map((m) => m.id)).not.toContain('auto')
   })
 
   it('兜底模型名已含规范化倍率（用 · 分隔）', () => {
     const byId = new Map(LOOMY.fallbackModels.map((m) => [m.id, m.name]))
     expect(byId.get('MiniMax-M3')).toBe('MiniMax M3 · x4.0')
     expect(byId.get('qwen-3.8-max')).toBe('Qwen 3.8 Max · x12.0')
-    expect(byId.get('spark-x')).toBe('Spark X2.5 · x0.1')
+    // ⚠️ spark-x 的倍率位已被上游改成**状态文案**「限时免费」（上游不再下发 x0.1），
+    // 故这里与远端保持一致 —— 「倍率必须显示」在此处无法由我们满足。
+    expect(byId.get('spark-x')).toBe('Spark X2.5（限时免费）')
   })
 
   it('loomyProductById 能查到，未知 id 返回 undefined', () => {

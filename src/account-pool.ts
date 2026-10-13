@@ -31,6 +31,78 @@ declare module '@deepseek-ai/cordis' {
 const EMPTY_MODEL_SET: ReadonlySet<string> = new Set<string>()
 
 /**
+ * `modelRateLimits` 里表示「**该账号全部模型**都受限」的保留键。
+ *
+ * ## 为什么需要它（真实缺陷，用户报障 2026-10-10）
+ *
+ * `modelRateLimits` 的既有语义是 `模型id → 重置时刻`，即**按模型**标记。
+ * 但有些上游的日额度是**按账号**结算的 —— 典型是 Qoder 的业务码 `110`
+ * （`Billing daily count exceeded`）：实测同一账号换三个不同模型
+ * （`qfmodel` / `dfmodel` / `qmodel_38max`）**全部**在数百毫秒内被同一句
+ * 文案拒掉，而该账号 `/sash/api/v2/me/usage` 显示积分并未耗尽。
+ *
+ * 只按模型标记时，用户手动换模型后会**再被选中**、立刻撞同一堵墙
+ * （会话证据：`qfmodel` 被拒后换 `dfmodel`，0.4 秒后同样被拒）。
+ * 故需要一种「整账号不可用」的表示。
+ *
+ * ## 为什么用保留键而不是给条目加新字段
+ *
+ * 与 `buddy-adapter.ts` 的 `markPolicyBlockedAccount` 同一个理由：
+ * `modelRateLimits` 是账号池里**唯一**的「暂时不可用」载体，复用它可让
+ * ① 选号的过滤天然生效；② 「重置」按钮、`hasAnyLimit` 徽章判据等既有
+ * 解禁路径**无需改动**即覆盖该标记。
+ *
+ * ⚠️ 代价是「重测」按钮需要把本保留键换成一个**可实测的真实模型**再发请求
+ * （见 `account-probe.ts` 的 `retestAccount`）—— 直接拿 `'*'` 当模型名发出去
+ * 必然被上游拒，那会让标记永远清不掉（本仓库已记录过同型死循环）。
+ *
+ * ⚠️ `'*'` 不可能是真实模型 id，故不会与 `模型id → 时刻` 的正常记录冲突。
+ */
+export const ALL_MODELS_RATE_LIMIT_KEY = '*'
+
+/**
+ * 该账号在 `modelId` 上是否**当前**处于受限状态（`resetAt` 尚未到期）。
+ *
+ * 判据同时看两个键，次序无关紧要：
+ * 1. `modelRateLimits[modelId]` —— 按模型标记（既有语义）；
+ * 2. `modelRateLimits[ALL_MODELS_RATE_LIMIT_KEY]` —— 整账号标记。
+ *
+ * ⚠️ `0` 是「不在重置期」的既有约定（见 `RateLimitInfo.resetAtMs`），
+ * 故判据必须用 `resetAt > 0` 而不是「键存在」。
+ *
+ * @param limits - 条目的 `modelRateLimits`（可能缺席）。
+ * @param modelId - 目标模型；**空串**表示调用方还不知道要发哪个模型。
+ * @param nowMs - 当前时刻（注入以便单测）。
+ * @returns 仍受限时返回其重置时刻，否则 `undefined`。
+ */
+export function rateLimitedUntil(
+  limits: Record<string, number> | undefined,
+  modelId: string,
+  nowMs: number = Date.now(),
+): number | undefined {
+  if (limits === undefined) return undefined
+  // ⚠️ 空串 = 「还不知道要发哪个模型」，**保持既有语义：不做任何限流过滤**。
+  //
+  // 理由不是「过滤不了」而是**不能**：`getAvailableAccount(provider, '')` 是
+  // `refresh()` 的取号入口（见 `index.ts` 的 `qoder.refreshAccountCredential`），
+  // 而续期与「该账号今天还能不能推理」无关 —— 若此处因整账号标记而返回 null，
+  // 续期会退到默认单凭据 ref（`QODER_ACCESS_TOKEN`，多账号用户根本不存在该
+  // ref），于是受限账号的 token 一直不续期，等次日解禁时反而因凭据过期而
+  // 报 AUTH。这条路径上「漏过滤」是安全的，「误过滤」才是缺陷。
+  if (modelId.length === 0) return undefined
+  // 整账号标记与按模型标记取**更晚**的到期时刻：两者同时存在时，
+  // 账号要等更晚的那个才真正恢复。
+  let until: number | undefined
+  for (const key of [modelId, ALL_MODELS_RATE_LIMIT_KEY]) {
+    const resetAt = limits[key]
+    if (resetAt !== undefined && resetAt > 0 && nowMs < resetAt) {
+      until = until === undefined ? resetAt : Math.max(until, resetAt)
+    }
+  }
+  return until
+}
+
+/**
  * AccountPool —— 多账号管理核心
  *
  * 职责：
@@ -798,11 +870,11 @@ export class AccountPool {
       .filter(a => a.provider === provider && a.enabled)
       .filter(a => excludeAccountIds === undefined || !excludeAccountIds.has(a.id))
       .filter(a => {
-        // 空 modelId（未知目标模型）：无可比对的键，保持候选不变。
-        if (modelId.length === 0) return true
-        if (!a.modelRateLimits) return true
-        const resetAt = a.modelRateLimits[modelId]
-        return resetAt === undefined || resetAt === 0 || Date.now() >= resetAt
+        // ⚠️ 判据统一走 `rateLimitedUntil`（按模型 + 整账号两个键），**不要**
+        // 在这里内联 `a.modelRateLimits[modelId]` —— 那会漏掉整账号标记，
+        // 让「日额度按账号结算」的上游（如 Qoder 的 code 110）被反复选中。
+        // 空 modelId（未知目标模型）在该函数内保持既有语义：不做限流过滤。
+        return rateLimitedUntil(a.modelRateLimits, modelId) === undefined
       })
     if (candidates.length === 0) return null
     // 候选顺序即**用户在 Jet Hub 拖拽设定的手动顺序**（`reorderAccounts` 写入）。

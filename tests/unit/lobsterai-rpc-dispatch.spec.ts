@@ -90,6 +90,15 @@ async function callRefresh(
     makeServiceStub('qoder', calls) as never,
     makeServiceStub('qodercn', calls) as never,
     makeServiceStub('trae', calls) as never,
+    // 补齐 trae 之后的占位（本用例只触发 trae / lobsterai，但**占位数量
+    // 必须与签名一致** —— 少补一个不会报错，只会静默错位）。
+    makeServiceStub('cline', calls) as never,
+    makeServiceStub('loomy', calls) as never,
+    makeServiceStub('raccoon', calls) as never,
+    makeServiceStub('minimax', calls) as never,
+    makeServiceStub('teleagent', calls) as never,
+    makeServiceStub('zcode', calls) as never,
+    makeServiceStub('stepcode', calls) as never,
   )
   const response = await getHandler()(new Request('http://127.0.0.1/api/jet-hub', {
     method: 'POST',

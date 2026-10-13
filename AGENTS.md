@@ -8,15 +8,19 @@
 
 ## 项目概述
 
-本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）、`minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）、`zcode`（智谱 **Z.Code** 免费额度通道）、`antigravity`（Google **Antigravity** / 官方 `agy` CLI 进程桥接，**非凭据型**）十二个 LLM provider 路由。
-<!-- 计数口径（2026-10-05 终态）：13 个面板 = codearts + 12 个 LLM 路由。
+本项目是 DeepSeek Harness 的一个插件（`dsh-codearts-auth`），提供华为云 CodeArts 浏览器登录与凭据管理功能。插件还附带 `buddy`（腾讯 CodeBuddy 中国版）、`workbuddy`（腾讯 WorkBuddy **国际版** / WorkBuddy AI）、`lobsterai`（有道 **LobsterAI** / 龙虾）、`qoder`（阿里系 **Qoder**）、`qodercn`（**Qoder 中国版**，与 `qoder` 同协议族、共用同一份 WASM）、`trae`（字节跳动 **TRAE**）、`cline`（**Cline** 桌面端 / Cline API）、`loomy`（讯飞 **Loomy** 办公助手）、`raccoon`（商汤 **Raccoon Work** / 小浣熊）、`minimax`（**MiniMax Code 中国版**，首个 **Anthropic Messages** 协议族）、`teleagent`（中国电信天翼 AI **星辰超级智能体**，**OpenAI 兼容且无加密**、**无续期端点**、登录产物靠**用户粘贴回调 URL**）、`zcode`（智谱 **Z.Code** 免费额度通道）、`stepcode`（阶跃星辰 **Step Code** 官方 CLI，**OpenAI 兼容且无签名**、**无续期端点**、浏览器授权 + **本地轮询**设备流）、`antigravity`（Google **Antigravity** / 官方 `agy` CLI 进程桥接，**非凭据型**）十四个 LLM provider 路由。
+<!-- 计数口径（2026-10-09 终态）：15 个面板 = codearts + 14 个 LLM 路由。
 ⚠️ 曾接入的 `vibex`（非 LLM 面板）、`mimocode` 与 `doubao`（字节豆包桌面端 CDP 桥接）
 均已移除 —— 面板增删时必须回来改这一句，
-且 `zcode-wiring.spec.ts` 的 `PROVIDERS` 计数断言（当前 13）与 `REF_PREFIX_TO_PROVIDER`
+且 `zcode-wiring.spec.ts` 的 `PROVIDERS` 计数断言（当前 15）与 `REF_PREFIX_TO_PROVIDER`
 要成对核对。antigravity **是** LLM 路由（调用 `registerAdapterIdempotent`），
-但它的**账号形态**与其余 11 家不同（非凭据型，凭据由官方 agy 二进制自管）。
+但它的**账号形态**与其余 13 家不同（非凭据型，凭据由官方 agy 二进制自管）。
 ⚠️ `antigravity` 是**仅有的一个不进** `REF_PREFIX_TO_PROVIDER` 的面板（非凭据型，
-补进去会在 `state.json` 丢失时造出指向空气的账号）；`jet-hub-store.spec.ts` 有用例钉死。 -->
+补进去会在 `state.json` 丢失时造出指向空气的账号）；`jet-hub-store.spec.ts` 有用例钉死。
+⚠️ 三处 provider 顺序必须对齐：客户端 `PROVIDERS`、`REF_PREFIX_TO_PROVIDER`、
+`registerJetHubRpc` 形参 —— 本仓库把 teleagent 统一插在 **minimax 之后、zcode 之前**，
+把 stepcode 统一插在 **zcode 之后、antigravity 之前**（antigravity 恒为最后一个）
+（`teleagent-rpc.spec.ts` 与 `stepcode-wiring.spec.ts` 各有「三处顺序对齐」用例钉死）。 -->
 
 `buddy` 与 `workbuddy` 同源：共用同一 CLI 内核与同一认证协议，差异全部收敛在 `src/product.ts` 的产品配置中。关键差异是 **`endpoint`**：中国版为 `copilot.tencent.com`，国际版为 `www.workbuddy.ai`，两者返回不同模型池，因此 endpoint 必须随产品切换、不可当作全局常量。此外 `platform` 分别为 `ide` 与 `workbuddy-ai`，国际版登录 URL 还追加 `version` / `loginSessionId`。
 
@@ -297,11 +301,50 @@
    ⚠️ 用**算术**而非 `Date.setHours`：后者按**本机时区**运算，在非 UTC+8 的机器上
    会得到错的时间。
 
-   ⚠️ **只标记该模型**（`modelRateLimits[modelId]`），不标记账号全部模型：
-   额度是「模型 + 账号」维度的，该账号在别的模型上仍可能可用。
+   ⚠️⚠️ **必须标记「该账号全部模型」，不能只标本模型**（**真实缺陷**，用户报障
+   2026-10-10；本条**推翻了**此前的相反结论）：
+   > 现象：UI 报 `qoder: Billing daily count exceeded`（`QUOTA_EXCEEDED`），
+   > 点「继续」后手动换模型，**立刻**再撞同一句错误。
 
-   ⚠️⚠️ **切号时必须传 `tried` 集合给 `getAvailableAccount`**：池按「限流重置
-   时间最早到期」排序，**刚失败的账号可能仍排第一**，不排除就会拿回同一个账号、
+   **旧结论（错的，已作废）**：「额度是『模型 + 账号』维度的，只标该模型」。
+   它是一条**未经实测的推断**，写进本文件后被实现忠实照做，于是缺陷被固化。
+
+   **实测取证（2026-10-10，同一账号 `暗夜君主` uid `01a0f6ed-…`）** ——
+   三个不同模型全部在数百毫秒内被拒，证明限额是**按账号**结算的：
+
+   | 模型 | 结果 |
+   |---|---|
+   | `qfmodel`（Qwen3.8-Flash） | 11.6s 后被拒 |
+   | `dfmodel`（DeepSeek-Flash） | **0.4 秒后**同账号同样被拒 |
+   | `qmodel_38max`（Qwen3.8-Max） | 同账号同样被拒（流内 `{"code":"110","message":"Billing daily count exceeded"}`） |
+
+   ⚠️ **同时要用「积分」证伪「额度耗尽」**：该账号
+   `GET https://openapi.qoder.sh/sash/api/v2/me/usage` 返回
+   `addOnQuota.remaining = 100`（**积分并未耗尽**）。即服务端拒绝的原因
+   是**按账号的每日请求次数**，不是积分余额 —— 排查时别只看「还剩多少积分」。
+   取证脚本 `scripts/probe-qoder-quota-scope.mjs`（只读、用免费模型）。
+
+   ⇒ 实现：标记**保留键** `ALL_MODELS_RATE_LIMIT_KEY`（`'*'`，见
+   `src/account-pool.ts`），选号判据统一走 `rateLimitedUntil()`
+   （同时认「按模型」与「整账号」两种键）。
+   ⚠️ **不要**在 `index.ts` / `account-pool.ts` 里内联
+   `modelRateLimits[modelId]` —— 那会漏掉整账号键，让受限账号重新进入候选
+   （本仓库有两处内联副本，注释都写着「与 `getAvailableAccount` 保持一致」，
+   改动判据时必须一起改）。
+
+   ⚠️ **保留键给「重测」带来一个新的死循环风险**（已修，勿回退）：
+   `retestAccount` 是**拿标记里的模型名真发一条消息**，而 `'*'` 不是真实模型 ——
+   直接发出去上游必回「未知模型」，标记就**永远清不掉**（本仓库已两次记录过
+   这一形态）。故 `account-probe.ts` 的 `probeModelIdFor()` 把保留键换成一条
+   **免费模型**（Qoder 表里的 `isFree`），且**清除/回写仍打在原键上**。
+   回归用例在 `tests/unit/account-probe.spec.ts`。
+
+   ⚠️ **空 `modelId` 仍不做限流过滤**（含整账号标记）：`getAvailableAccount(id, '')`
+   是 `refresh()` 的取号入口，续期与「今天还能不能推理」无关；若在此过滤，
+   受限账号的 token 一直不续期，次日解禁时反而因凭据过期报 AUTH。
+
+   ⚠️⚠️ **切号时必须传 `tried` 集合给 `getAvailableAccount`**：池按**用户手动
+   顺序**返回候选，**刚失败的账号可能仍排第一**，不排除就会拿回同一个账号、
    命中 `tried.has` 而**立即放弃切换**（与 `buddy-adapter.ts` 的同款注释同因）。
    ⚠️ `tried` 必须**跨重试保留**（不能在每次迭代里新建），否则会在两个账号之间
    **无限来回**。
@@ -324,9 +367,13 @@
 
    回归用例在 `tests/unit/qoder-adapter.spec.ts` 的
    「额度受限：标记当日 24:00 + 切换账号」段（8 条：4 条日界纯函数 + 4 条行为，
-   后者用桩账号池断言「标记了哪个账号/哪个模型/什么时间」「取号时传了 tried」
-   「切到新账号后重发」「全部受限时如实抛错不无限切」）。
-   ⚠️ 已做**反向验证**：日界改用非 UTC+8 → 4 条变红；不传 `tried` → 2 条变红。
+   后者用桩账号池断言「标记了哪个账号/**哪个键**（保留键 `'*'`）/什么时间」
+   「取号时传了 tried」「切到新账号后重发」「全部受限时如实抛错不无限切」）。
+   ⚠️ 池侧判据的回归用例在 `tests/unit/account-pool.spec.ts` 的
+   「整账号受限时，换**任何**模型都跳过该账号」等 4 条。
+   ⚠️ 已做**反向验证**：① 日界改用非 UTC+8 → 4 条变红；② 不传 `tried` → 2 条变红；
+   ③ `rateLimitedUntil` 去掉整账号键 → 1 条变红；④ 适配器改回单模型标记 →
+   1 条变红；⑤ 去掉 `probeModelIdFor` 的保留键映射 → 1 条变红。
 
 
 ⚠️ **`src/qoder-auth-wasm.wasm`（298 KB）随插件分发**，构建时由 `scripts/copy-assets.mjs` 复制到 `lib/`（`tsc` 不搬 `.wasm`）。`build:all` 已含该步骤。
@@ -672,13 +719,322 @@ native 另有 `rl = Object.freeze({ clientType: 10, businessProduct: 'app' })`�
 ⚠️ **RPC 分支须传 `precheckStatus: false`** —— `claimQoderDailyCheckin`
 自带活动列表查询，否则会重复发一次 GET（与 LobsterAI 传 false 同理）。
 
-### ⚠️ `openai-compat.ts` 只服务 qoder，不要顺手重构既有适配器
+### ⚠️ `openai-compat.ts` 只服务 qoder / teleagent，不要顺手重构既有适配器
 
-`src/openai-compat.ts` 把「消息序列化 + SSE 消费」抽成共享实现给 **qoder 适配器**用。`buddy-adapter.ts` / `lobsterai-adapter.ts` **刻意不改用它** —— 那两份实现已被大量单测与线上流量验证，重构它们属于与本任务无关的高风险改动。若将来要统一，应作为独立任务并配以逐条对拍测试。
+`src/openai-compat.ts` 把「消息序列化 + SSE 消费」抽成共享实现给 **qoder 适配器**与
+**teleagent 适配器**（后者是唯一「纯 OpenAI 兼容、无任何厂商特有转换」的用户）用。`buddy-adapter.ts` / `lobsterai-adapter.ts` **刻意不改用它** —— 那两份实现已被大量单测与线上流量验证，重构它们属于与本任务无关的高风险改动。若将来要统一，应作为独立任务并配以逐条对拍测试。
 
 它承载的教训（改它时必须保留）：`delta.content` / `delta.reasoning_content` 会显式返回 **`null`**（必须 `typeof === 'string'` 判定）；孤儿工具调用须剔除（否则后端 400 且坏历史被反复重放）；`function.name` 只允许非空覆盖；残缺参数**不补 `{}`**（补了会让 harness 报 schema 错误而非重试）。
 
 `trae` 同样**完全独立**（第五个脉系，独立一套 `src/trae*.ts`），且差异点与其他四者都不一样：认证用 **ExchangeToken 轮换 refreshToken**（不是轮询、也不是 authCode 交换）；鉴权头是 `Cloud-IDE-JWT <token>` 加十余个 `X-*` 身份头；**请求体需要从 OpenAI 格式转换为 SOLO 格式**（`function` / `config_name` / `tools.parameters` 序列化等）；**响应是 SOLO 自定义 SSE 事件**（`output` / `token_usage` / `done` / `error`），必须自行解析并转成 OpenAI chunk；凭据还必须持久化 `machine_id` 与 `device_id`（均为 **32 位 hex**，分别用作设备指纹与签到设备号，后者账号间必须互异）。**登录回调默认直接回传 token**（`auth_callback_url` 参数，老流程没有 `code`；但也并存 PKCE 新流程，两套都要认），详见下「TRAE 协议要点」。实现见 `docs/trae-integration-plan.md`。
+
+`teleagent`（**星辰超级智能体**，中国电信天翼 AI / 中电信人工智能公司）是**协议层最薄、但登录形态最特殊**的一个：它走 **OpenAI 兼容且无加密**的端点（`POST https://agent.teleai.com.cn/superCowork/sapi/api/v1/chat/completions`），推理直接复用 `src/openai-compat.ts`，**没有** `teleagent-messages.ts`（唯一没有 messages 层的推理 provider）。但它的登录**无法自动化**：官方桌面端靠自带 BrowserWindow 监听导航抓 token，而它的回调地址是**服务端常量**（`LOGIN_PAGE` 写死，**没有** `redirect_uri` 可配 ⇒ 起本地监听没用）、自定义协议 `teleai-cowork://` 又需要系统协议注册（⇒ 插件也接不到）。所以它是**唯一一个要用户粘贴回调地址**的面板：`startLogin()` 立即返回 loginUrl，后台等 `submitLogin()`（扩展动词 `teleagent.loginSubmitCallback`）落定，与 Antigravity「loopback 绑不上时降级为人工粘码」同思路。七个必须记住的点：
+
+1. **两个凭据在两个不同的头上**：`Authorization: Bearer <内置渠道 apiKey>`（asar 硬编码 `sk-qvp4m6h9g20uM6PgYP7E`，随插件分发）+ **`X-Token: <用户 token>`**。把用户 token 塞进 Bearer 会 **401**（实测 `user_info` 回 `4001 当前令牌是否存在`）。另有 `X-SuperAgent-Timestamp`（**秒级**）/ `X-SuperAgent-Nonce`（**每请求重算**）/ `X-SuperAgent-Device-Id`（**12 位 hex**，见下第 7 点）/ `X-Route-Target: ops-gateway`。
+   ⚠️⚠️ **推理端点还需要签名，业务端点不需要**（2026-10-07 实测，**推翻了初版「不需要签名」的结论**）：`chat/completions` 只带 `X-Token` 回 **403 `40301`「检测到客户端版本过低，请检查新版本并升级以继续使用」**；带上 `X-App-Version` 却不带签名则回 **401 `40104 unsupported sign version`**。而 `user_info` / 余额 / 签到只带 `X-Token` 就 **200**。
+   ⚠️⚠️ **`40301` 的文案是**误导性的**：它说「客户端版本过低」，但**与版本号完全无关** —— 实测 `X-App-Version` 从 `2.5.3` 扫到 `3.0.0`，错误一模一样。**判据：见到 `40301`/`40104` 就去查签名，不要先去改版本号**（适配器已把该提示拼进错误文案，见 `looksLikeSigningError`）。
+   **签名算法**（asar `LocalAuthService.signRequest` 原文）：`msg = ["local-v1", METHOD, pathWithQuery, msTs, nonce].join("\n")`，`sig = HMAC-SHA256(sessionKey, msg).digest("base64url")`，头为 `X-SA-Sign-Version/Timestamp/Nonce/Signature`。
+   ⚠️⚠️ **头有两套且都要发，时间戳单位还不同**：`X-SA-*`（renderer 侧，**毫秒**）+ `X-SuperAgent-*`（Go 引擎侧，**秒**）。⚠️ **`X-SuperAgent-Signature` / `X-SuperAgent-Sign-Version` 只存在于 Go 二进制**（`rununit.HeaderNames`，原文是头名连续拼接 `X-SuperAgent-TimestampX-SuperAgent-Device-IdX-SuperAgent-SignatureX-TeleAI-Run-Unit-Type`），**不在 renderer 代码里**（renderer 的 `sYt()` 只有 Timestamp/Nonce/Device-Id/Install-Id）⇒ **只读 renderer 必然漏掉它们**（我第一版就漏了，症状 `40101 missing super agent security headers`）。
+   ⚠️ **`sessionKey` 是本地随机的**（客户端 `ensureSession()`：`randomBytes(32).toString("base64url")`，**每进程新建、不经服务端注册**）⇒ 服务端**不可能**校验签名内容（没有可比密钥），只能校验「头存在 + 版本合法 + 时间戳新鲜」⇒ 本插件**自己生成**一个并持久化（`TELEAGENT_SIGN_KEY_REF`，与 deviceId 同策略）。⚠️ **该推论仍是待端到端确认的假设**：`scripts/probe-teleagent-infer-sign.mjs` 可验（需 `DSH_TELEAGENT_TOKEN`）。
+   ⚠️ **Go 侧还有它自己的一层签名**（`SuperAgentTransport.RoundTrip → readAuthState → AKSKSigner.Sign/GatewaySigner.Sign → jwtThirdSegment/sha256Hex/hmacHex`），其 `SUPER_AGENT_AUTH_STATE` 是 `AES-256-GCM(sha256(sessionKey), authState)`。**我们走 renderer 那条（`X-SA-*`）**，两条路径别混。
+2. **`code` 没有可交换的端点** —— 回调形如 `…/cowork/auth?code=…&token=…`，asar 的登录判定要求 `code` 存在，但**真正被存进凭据、被 `X-Token` 使用的是 `token`**（`completeLogin(a.token)` → 直接 `setToken` → `fetchUser`）。全文检索 `/oauth/token`、`exchange`、`AUTH_SESSION_CODE` 的调用点均无「用 code 换 token」的实现 ⇒ **不要凭空发明交换端点**。`parseTeleagentCallbackInput()` 因此宽容到三种输入（回调 URL / deeplink / 裸 token），且**只有 code 时给出精确原因**而不是含糊的「格式不对」。
+3. **无续期端点 ⇒ 失效只能重新登录**：asar 全文检索 `refresh_token` / `ExchangeToken` / token 刷新 ⇒ **0 命中**。故 `isTeleagentRefreshable()` 恒 `false`、账号池占位条目也写 `refreshable: false`（写成 true 会让定时器每 30 分钟对一个不可能成功的操作发一轮请求），`refresh()` 退化为「探测有效性」（Loomy 同型），失败抛的错误 **`name` 必须是 `'RefreshTokenExpiredError'`**（`src/refresh.ts:23` 按 name 判终态；写成 `TeleagentRefreshTokenExpiredError` 会让该分支恒不命中、只能靠文案正则兜底 —— 这是本仓库记过的真实缺陷）。
+   ⚠️ **token 是标准 JWT、`exp` 可解**（2026-10-07 实测修正）—— 形如
+   `Em9xR4:eyJhbGci….fakesig`（**首段是 tenant 前缀 + 冒号**，故 `decodeJwtExpMs`
+   必须先剥前缀），payload 含 `exp`/`nbf`/`iat`/`accountId`/`accountName`/`attr`/`tenant`/`certType`，
+   实测 `exp` ≈ 30 天后。⇒ `teleagentCredentialExpiresAtMs()` 现**优先 `expires_at`、
+   回退解 JWT `exp`**。⚠️ 第一版写「不是 JWT、没有可解析的过期时间」——**那是错的**，
+   当时只是**没去解它**。⚠️ 但 `exp` 只作**展示**用（本 provider 无续期端点，
+   过期只能重新登录）；`isTeleagentExpired()` 在两者都读不到时**保守判「未过期」**
+   （判成已过期会让每次发消息都先触发一次必然无效的续期）。
+4. **模型档位与图片都是「未实测」而非「不支持」**：asar 种子表 `KG` 只有 `chat-nano`(轻速) / `chat-lite`(轻量)（均 `limit.context:1e5`、`output:16384`），`chat-pro`(专业) 出自 Go 引擎内嵌的示例会话（`providerID:"NewApi","modelID":"chat-pro"`），其 limit 由服务端目录下发 ⇒ 三条窗口统一按「**预置档位共享一份 preset-context**」（asar 原文）填 100K。
+   ⚠️ 种子表**没有** `thinking_config` / `effort_options` ⇒ `resolveModel` **不声明 `reasoning`**（UI 显示「未提供推理等级」），**不按截图或直觉编档位**（与 Qoder「`qmodel` 没有档位就是没有」同一条教训）。
+   ⚠️ 种子表**没有** `modalities` ⇒ `supportsImage` 恒 `false`，收到图片**报 `UNSUPPORTED_CONTENT` 而不是静默丢图**（静默会让用户以为模型看到了图片）。
+   ⚠️ `fetchModels()` **当前只返回兜底表、不发网络请求** —— 目录由服务端下发后缓存进**账号级** `model-catalog`（asar 原文），拉取它的 HTTP 路径**在 main / renderer / `@teleai-agent/*` / Go 二进制里都没定位到**（`/api/v1/general/config/{key}` 的 config key 未解出）。**不凭猜测发一个可能 404 的请求**。拿到真实端点后只需在 `fetchModels` 补一次拉取 + `normalizeTeleagentModel` 归一。
+5. **积分与签到**都有** —— 且这一条是**结论修正**，别照初版实现**：初版把能力登记成 `{balance:false, dailyCheckin:false}`，理由是「asar 里找不到可自动调用的领取端点」。**用户 2026-10-07 的客户端截图直接证伪**（积分余额 6100.00 / 每日可领 100 / 已领 2 天 / 累计 200 / 今日已领）。真端点（asar `hxe` 组件逐字读出）：
+   - **余额**：`GET /user/portal/companyStore/userCenter` → **`current_points_balance`**
+   - **签到面板**：`GET /user/portal/companyStore/v2/checkDayTask` → `daily_task.{daily_claimable_points, total_claim_days, total_claimed_points, claimed_today, button_text}` + `activity.activity_title`
+   - **领取**：**`GET`** `/user/portal/companyStore/checkTask?type=daily_login`（`Rn` 即 `bM("GET",…)`，**写成 POST 会 404/405**）
+   ⚠️ **领取响应不被客户端解析**（只 `await`，随后重查面板）⇒ 形状未知；本插件同样不解析它，而是领取后重查 `checkDayTask` 拿权威状态。⚠️ **「今天已领」只能靠 `claimed_today` 判**（无显式幂等码）⇒ RPC 的 `claimAll` 分支**必须开启状态预检**（与 TRAE「claim 幂等且无法区分」同因）。⚠️ 余额取不到字段 ⇒ `null`（查询失败）**不是 0**。⚠️ `streakDays` 恒 0（面板只给「累计」天数，冒充「连续」是编造语义）。
+   ⚠️⚠️ **教训（比结论更值得记住）：关键词搜索对「业务域词汇」必然漏检。** 初版按 `/api/`、`credit`、`point`、`signin`、`checkin` 搜 asar，而路径是 `user/portal/companyStore/…`（**不含其中任何一词**）、字段名全是 `daily_claimable_points` 这种业务自定义命名 ⇒ 两轮搜索都空，于是得出一个**看起来很确定**的否定结论。**「搜不到」≠「不存在」**，尤其当搜索词是「我以为它该叫什么」时。✅ 正确姿势：**先搜界面文案的 i18n key**（`settings.benefit.pointBalance` / `settings.welfare.dailyClaim`），再顺藤读它消费的字段名与产出该字段的 `Rn(ot.XXX)` 调用 —— 全程用实证的名字。
+   ⚠️ 另有一个**已证伪的验证思路**（别重复）：想借 Qoder 那条「404=路径不存在 / 401=认证层」的判据、用**无效 token** 打这些路径 —— **在本站不成立**：实测该 base 下**任意路径**（含故意拼错的 `companyStroe` 与完全不存在的路径）未认证时**一律 200 + SPA 落地页 HTML**。故端点存在性只能靠真实凭据、或靠上述源码证据。
+   ⚠️ 另有两条实现约束：**设备标识是设备级**（`X-SuperAgent-Device-Id` 存独立 `TELEAGENT_DEVICE_ID` ref、全设备共用一份；asar 明示 deviceId 与 installId 一起持久化于设备级状态文件。给每个账号各造一个会让服务端看到「同一台机器冒出 N 台设备」；读写失败时降级为**不下发该头**而不是让登录失败）；**提交失败不删占位条目**（用户多半只是粘得不完整，要能重试；只有 `startLogin` 的 10 分钟超时才清理），且前端提交成功后**主动收敛**、不等 `login.poll`（那条轮询 300 秒就停，比后端 10 分钟窗口短，不主动收敛会停在「等待粘贴」）。
+6. **数据根在 `~/.local/share/TeleAgent`（XDG），不是 `%APPDATA%`** —— 实测用户登录后 `%APPDATA%\TeleAgent` **仍是空的**，而 `~/.local/share/TeleAgent/users/<accountId>/` 下有完整账号目录（`app-auth/token.json`、`teleagent.db`、`log/`、`logs/js-log/`、`memory/`、`skills-metadata.json`）。asar 注释亦明示「引擎的账号数据根用 XDG 这两个名字，引擎把值原样当作根」。
+   ⚠️ **账号目录名形如 `v1_public_2097338932289392640`，尾号即 `user_info` 的 accountId**（实测 `js-log` 里 `userId: 2097338932289392640` 与之吻合）。
+   ⚠️ **引擎日志 `users/<accountId>/log/super-agent-server-<date>.log` 是**权威取证来源**（比猜端点可靠得多）**，里面有一行：
+   ```
+   [provider/list] registry=[openrouter groq ollama NewApi anthropic openai ark]
+     result_all=[NewApi alibaba-cn deepseek kimi-for-coding minimax-cn modelscope moonshotai-cn
+                 siliconflow-cn stepfun tencent-coding-plan tianyi-token-plan xiaomi
+                 xiaomi-token-plan zhipuai zhipuai-coding-plan] connected=[NewApi]
+   ```
+   即**模型目录的权威清单**（`NewApi` 是唯一已连接的内置渠道，其余 15 个是需自带 key 的 preset），
+   以及 `GetModelCapabilities provider="NewApi" model="chat-lite" capabilities={…}` ——
+   实测 **`Reasoning:false` / `Image:false` / `ToolCall:true`**，
+   这**印证了**第 4 点里「不声明档位、`supportsImage:false`」的保守取舍是**对的**（不是偷懒）。
+   ⚠️ 该日志还证明用户**真的用 `chat-lite` 跑通过真实任务**（`tokens(in=2534 out=793 cacheRead=256) cost=$0.000000`）。
+   ⚠️ `token.json` 是 Electron safeStorage 加密（`v10` 前缀 + DPAPI），**不要尝试解密** ——
+   那是用户的凭据存储。要端到端验证就用自己的插件登录（`DSH_TELEAGENT_TOKEN`）。
+ 7. **「凭据未配置」多半不是数据坏了，而是粘贴入口丢了** —— **真实缺陷**（用户 2026-10-07 截图：卡片绿色「已启用」、凭据行写着 `TELEAGENT_ACCOUNT_DF47FE74`、积分「凭据未配置」、顶部「1 个失败」）。
+
+   核对本地存储得到的**事实**：`.credentials.yaml` 里其余 12 家账号都在、**没有任何 `TELEAGENT_*` 键**；池里那条 `teleagent-1954b544` 创建于 **22:57:54**（截图时仅 4 分钟前）、`nickname` 仍是 id 本身（成功登录会回填成 `TeleAgent 手机尾号`）⇒ 这是一次**没走完的登录**留下的占位条目，报错**如实**，不是误报。
+
+   ⚠️ **根因在前端，而后端一直是好的**：粘贴框的显示条件是 `teleagentPending !== null`，那是 `ProviderPanel` 的**纯内存 state**，而该组件在**切换 provider 时会被强制重新挂载**（`JetHubPage` 的 panelEpoch），重开设置页同理 ⇒ 用户一离开，粘贴框**永久消失**。但提交通路 `teleagent.loginSubmitCallback` **只查 `pool.findAccount(accountId)`、不依赖内存 `pendingLogins`** ⇒ DSH 重启过、10 分钟超时过了都**仍然能粘贴成功**。**缺的纯粹是入口。** ⇒ 排查时别去怀疑凭据存储或签名，**先看那个 textarea 还在不在**。
+
+   ✅ **修法两半，缺一不可**：① 后端 `account.list` 逐条补 `credentialPresent`（`credentialIsPresent()`，**只答存在性、绝不返回凭据内容**）；② 前端 `loadAccounts` 据此恢复入口（纯函数在 `plugin-src/client/teleagent-login-restore.js`，与 `account-model-link.js` 同因成文件：react 不在单测依赖内，判定必须抽出来才能真断言）。
+
+   ⚠️ **判据必须是「条目在 + 凭据不在」，不能用「条目在 / `credentialRef` 有值」**：`account.create` 对**每个** provider 都是先建占位条目（**ref 从一开始就写好了**）、登录成功才落盘凭据 —— 两者不等价。
+   ⚠️ **前端也不能写成 `!credentialPresent`**：非凭据型条目（antigravity 的 `credentialRef` 是空串，后端**刻意不给**该字段 ⇒ `undefined`）取反后会给它弹粘贴框，那是新造的缺陷 —— 必须严格 `=== false`。
+   ⚠️ **后端也不能只判 `resolved` 真值**：空串 / 纯空白凭据在下游（各 `*-auth.ts` 的 `resolveCredential`）一律抛「凭据未配置」，这里判成 `true` 前端就不恢复入口，缺陷原样留在下游。
+
+   ⚠️⚠️ **本修复自己会引入一个新死局**：框现在能从「无凭据条目」自动恢复，于是「取消」若只把 state 置 null，**下一次刷新就又弹出来、永远关不掉** ⇒ `cancelTeleagentLogin` 现在**真的删掉那条占位条目**（`account.delete`）。这条耦合由源码断言钉死（反向验证：去掉 delete ⇒ 该条变红）。
+
+   ⚠️ 另注意 `startLogin` 的 **10 分钟超时会 `removeAccount` 清掉占位条目**（本次实测确认：22:57:54 建、23:15 复查时条目**已消失**）⇒ 孤儿条目多数能自愈，但 **DSH 重启会连 timer 一起丢掉**，那时只剩 UI 侧这条恢复路径管用 —— 这正是它必须存在的原因。
+
+   回归用例 `tests/unit/credential-presence.spec.ts`（19 条：后端存在性判据 6 + 前端选择逻辑 9 + 接线 4）。已做**反向验证** 3 处（`=== false` 改成 `!x` → 1 红；空串判 true → 1 红；取消不 delete → 1 红），并纠正了**自己先写错的一条**：反向断言打在整段 `account.list` 上会被 antigravity 分支**正常**的 `value: { accounts }` 命中而误报失败 ⇒ 须收窄到 `pool.listAccounts(` 之后。
+
+  8. **入口修好了，链条上另外四环还是断的** —— **真实缺陷**（用户 2026-10-08 同一张截图：
+     粘贴框已能自动恢复、卡片「已启用」、积分「凭据未配置」、有效期「未知」，
+     追问确认症状是**「粘贴后报错 / 点了没反应」**）。
+     **共同根因：上面那个「可恢复」机制上线时，没有和 `startLogin` 的旧生命周期、
+     也没有和 2026-10-07 的实测协议结论对齐。**
+
+     - **⓪ 最贴合症状的一条：前端引导文案教了一条实测走不通的路。**
+       粘贴框原文叫用户「把浏览器地址栏里**最终那串地址**复制粘贴到下面
+       （形如 `…/cowork/auth?code=…&token=…`）」，而**地址栏根本没有 token**
+       （实测落在 `…/cowork/auth?code=ucc.XXXXXX`，只有 code；token 装在唤起桌面端的
+       `teleai-cowork://auth?token=…` deeplink 里、被官方客户端**拦截导航**取走）。
+       ⚠️ 后端那条 reason 在 2026-10-07 改过一版（指向 F12 → Console 抓 deeplink），
+       **只有前端首屏引导没同步** ⇒ 用户照着粘回来的永远是只有 code 的 URL，
+       于是反复失败 —— 这就是「粘贴后报错」。
+       ⚠️️ **但那「改对了」的那一版本身也是错的** —— 见下 ⓪.1。
+       ⇒ **教训：一个结论被实测推翻时，要顺着它的所有**下游复述点**逐个找回去。**
+         改了解析器不等于改了指引；界面文案是同一个结论的**另一个消费者**。
+       ⚠️ 同一条被推翻的假设还留在三处**注释**里（`jet-hub.js` 的 `teleagentPending`
+         声明、`teleagent-auth.ts` 模块头与 `EXPIRY_ACCESSORS`、`teleagent.ts` 里
+         `teleagentCredentialExpiresAtMs` 的 JSDoc —— 最后那处尤其糟：**同一个函数**的
+         JSDoc 说「token 不是 JWT」、函数体注释说「是 JWT」，自相矛盾）。
+         已一并校准。**留着它们，下一个人会照着把文案改回去。**
+
+     - **⓪.1 ⚠️️ 而我上一轮给出的替代指引「F12 → Console 复制 teleai-cowork://」
+        同样是错的**（2026-10-08 用户第二张截图证伪 —— **是我亲手写进代码、
+        协议笔记和测试断言的**）。用户照做后 Console 里**只有页面自己的脚本日志**
+        （`SideBar.*.js`）与无关的统计拦截错误（`rumt-zh.com` 被广告插件 block、
+        favicon 404），**没有任何 `teleai-cowork://`**。两条原因都已在用户机器核实：
+
+        1. 浏览器**不会**把跨协议导航打印进 Console；
+        2. 桌面端日志**只记「拦截发生了」、不记 URL** ——
+           `%USERPROFILE%\.local\share\TeleAgent\logs\main-2.5.3.log` 全文检索只有
+           `[Deeplink] Intercepted in-app deeplink navigation { route: 'auth' }`，
+           **到此为止，没有 token**。
+
+        ⇒ **元教训（比结论本身重要）：我上一轮「校准陈旧注释」时，把注释里一个
+        从未被验证过的假设当成事实搬进了三处。**
+        **注释被实测推翻过一次，不等于它剩下的部分都是对的。**
+        写「用户照着做就能拿到」这类指引前，**必须自己在真实浏览器里走一遍**；
+        而把它**同时锁进断言**更危险 —— 绿的用例会让错误指引显得「已被验证」，
+        下一个人就不会再质疑。
+
+        ⇒ **当前结论**：唯一能看到 token 的地方是 **Network 面板**
+        （① 那条 `cowork/auth?code=…` 请求的 `Location` 响应头，若服务端直接
+        302 到 deeplink；② 或页面自己调的换 token 请求的响应体），
+        且必须**勾选「保留日志」**（授权后页面会跳转，不勾选会把那条请求冲掉）。
+        ⚠️ **这一版同样尚未被用户实测确认**（两种形态哪种为真还没抓到），
+        所以文案里**两种都列出来**，而不是只承诺一种。
+
+        ✅ **同时封掉自动化幻想**（这次实测到位了）：拿用户浏览器**已消费过**的
+        真 code 再打一次 `/cowork/auth`，返回与**随机假 code 逐字节相同**的
+        `400 {"error":"get token error"}`（都是那 27 字节，只差追踪头）
+        ⇒ **code 一次性、且该端点对无效/已废 code 一视同仁**，
+        不存在「把 code 交给插件、插件换 token」这条路。
+        由 `teleagent-rpc.spec.ts` 新增的「不得把 code 交换当方案」用例锁住。
+        ⚠️ 另注意用户那次授权**桌面端没在跑**（日志最后写入 10-07 22:57，
+        授权发生在 10-08 16:44）⇒ deeplink 无人接收，**code 白烧**。
+
+     - **① 恢复路径粘贴成功后，昵称与有效期永远不回填**（⇒「有效期 未知」的真凶）。
+       回填原先只挂在 `account.create` 的 `startLogin().result.then()` 上，而
+       `submitLogin` **只在 `pendingLogins` 命中时才 `resolve`** ⇒ 走恢复路径时
+       （DSH 重启过、Map 是空的）`result` **永不落定**，`.then()` 永不执行：
+       凭据有效、能正常推理，卡片却永远停在 `teleagent-xxxx` + 「有效期 未知」。
+       ⚠️ **直接证据：`submitLogin` 的 `options.pool` 形参 JSDoc 写着「回填昵称/有效期用」，
+       函数体从头到尾没读过它 —— 一个死参数。** 排查时看到「声明了却没人用的参数」
+       就该警觉：它通常是**被搬走或搬丢**的那半段逻辑。
+       ⇒ 修法：回填**收敛进 `submitLogin`**（它同时握着 pool / accountId / 验证过的凭据，
+       且**不依赖**内存 pendingLogins）。`updateAccount` 在条目不存在时抛
+       `Account ... not found`，故回填失败必须吞掉 —— **别让它把一次已成功的登录报成失败**。
+
+     - **② 超时与提交有竞态，会白做登录或造出孤儿凭据。**
+       `startLogin` 的 10 分钟定时器一到就 `reject`，`account.create` 挂的 `.catch()`
+       随即 `removeAccount(id)` —— 而 **`removeAccount` 连带 `credentials.unset`**
+       （`account-pool.ts`）。若定时器在 `submitLogin` 跑 `ensureDeviceId` /
+       `ensureSignKey`（磁盘）与 `fetchUserInfo`（网络）的中途引爆：
+       凭据先写后被 unset（**登录白做，可 RPC 已回 `done:true`**），
+       或凭据在条目删完后才落盘（**密钥库里留下永久孤儿凭据**）。
+       ⇒ 修法：**在任何 `await` 之前**拆掉定时器（`clearTimeout` 但**保留**落定器，
+       `result` 之后仍会 resolve）。用户既然已提交，超时就不该再介入。
+       另在 `.catch()` 里删条目前先 `credentialIsPresent()` 兜一道，
+       覆盖「定时器已引爆、`clearTimeout` 已无效」的残余窗口。
+       ⚠️ 别顺手把超时整个废除：它是孤儿条目的**自愈**路径（第 7 条末尾记过）。
+
+     - **③ 条目被超时删了但框还挂着 ⇒「点了没反应」。**
+       框只由内存 state 控制、不知道条目没了，每次提交都只得到「账号不存在」
+       （`loginSubmitCallback` 的 `findAccount` 判空），而 `done:false` 分支原先
+       **只 setError 不刷新** ⇒ 框永不消失，只能重开设置页。
+       ⇒ 修法：`done:false` 也 `await loadAccounts()`。
+       收框后错误没了渲染位置（它画在框内部）⇒ 还要 `setError` 冒泡到面板顶部，
+       否则用户只看到框「凭空消失」。
+
+     - **④ 提示叫用户「重新打开天翼登录页」却没有链接可点。**
+       `loginUrlForManual` 只在 `window.open` **被拦截**时赋值，恢复路径必然为 null。
+       ⇒ 修法：`account.list` 对 teleagent 且 `credentialPresent === false` 的条目
+       补 `loginUrl`（`loginPageUrl()` 是**产品常量、不含凭据**，可安全下发），
+       前端按 accountId 从列表取。**不要**复用 `loginUrlForManual`。
+
+     回归用例：`tests/unit/teleagent-auth.spec.ts`（10 条，缺陷①②行为）
+     + `credential-presence.spec.ts`（+3 条接线：loginUrl 下发 / 前端取值 / 失败刷新）
+     + `teleagent-rpc.spec.ts`（+2 条文案：指向 deeplink、前后端同源）。
+     ⚠️ **反向验证抓出了我自己写的一条同义反复用例**（值得单独记）：
+     我最初用 `vi.useFakeTimers()` + `advanceTimersByTimeAsync(超时+10s)` 断言
+     「提交中途越过超时仍不 reject」，以为这钉住了「`clearTimeout` 在第一个 `await` 之前」。
+     **实测把 `clearTimeout` 挪到 `ensureDeviceId()` 之后，那条依然全绿。**
+     原因：`advanceTimersByTimeAsync` 会**先把 microtask 队列跑完**再触发定时器，
+     而整条 await 链（桩 credentials 是立即 resolve 的）在定时器引爆前早已结束
+     ⇒ 它只能证明「定时器最终被拆了」，**证明不了顺序**。
+     而竞态窗口恰恰就是那几个 await。
+     ⇒ 改法：断言**副作用顺序** —— 给桩 credentials 加 `events` 记录、
+     spy `globalThis.clearTimeout` 也 push，断言 `events[0] === 'clearTimeout'`
+     （并 `toContain('credentials.resolve')` + 凭据已落盘，排除「提前 return」假绿）。
+     这次反向验证才红（`expected 'credentials.resolve' to be 'clearTimeout'`）。
+     **判据：凡「修复的正确性全在顺序上」的用例，必须断言顺序本身，
+     不能用「结果对不对」代替 —— 结果往往对 mock 的时序不敏感。**
+     另：`stripComments` 那个朴素正则会把**字符串字面量里的 `://`** 当行注释起点
+     （`'teleai-cowork://auth?…'` 被删到行尾）⇒ 含 URL scheme 的文案断言
+     改用**原始源码 + `createElement` 代码形状**匹配（注释里不会出现该形状，
+     故既不被 strip 破坏、也不会被注释假绿）。
+
+  8. **登录产物现在能自动取了（CDP 受控浏览器），粘贴退为兜底** —— 2026-10-08 实现。
+     模块 `src/teleagent-cdp-login.ts`，入口 `TeleagentAuth.loginWithBrowser()`，
+     RPC 动词 `teleagent.loginWithBrowser` / `teleagent.loginBrowserStatus`。
+
+     - **token 到底在哪（CDP 探针实测，别再靠猜）**：登录链路上有**两个合法 JWT**，
+       形态无法区分，**按出现顺序选会选错**（探针第一版就选错了）：
+
+       | 响应 | JWT 长度 | 开头 | 是什么 |
+       |---|---|---|---|
+       | `upms/public/auth/chooseUserAccountLogin` (XHR) | 240 | `eyJ0eXAiOiJK` | **UPMS refreshToken**，payload 明写 `"tokenType":"login.v3…"` |
+       | `agent.teleai.com.cn/…/cowork/auth?code=…` (Document) | **493** | **`eyJhbGciOiJI`** | ✅ superCowork 的 token |
+
+       ⇒ 取舍权**交给服务端**：逐个真打 `user_info`，谁被认下谁胜出（`verify` 回调）。
+       由 `teleagent-cdp-login.spec.ts` 的结构断言钉死
+       （命中条件必须是 `if (ok && resolved === undefined)`）。
+       ⚠️ 冒头那段 `eyJhbGciOiJI` 正是已知形态 `Em9xR4:eyJhbGci…` 去掉 tenant 前缀后的样子。
+
+     - **四条曾经以为可行的自动化捷径都已判死**（别再走一遍）：
+       ① `redirect_uri` 换 `127.0.0.1` —— UPMS **只给官方回调地址签发
+       `loginFlowId` + `state`**，换了 SPA 直接白屏（用户实测「页面打不开」）。
+       ⚠️ 但 authorize 第一跳对**任何** redirect_uri 都回 302 —— 又一次
+       「入口检查证明不了参数被接受」，与 Qoder 的 client_id 同型。
+       ② 用户粘 code、插件去换 —— **code 一次性**，浏览器导航本身就消费它。
+       ③ 从桌面端日志取 —— 日志只记 `route: 'auth'`，**不记 URL**。
+       ④ Console 里找 deeplink —— 浏览器**不打印跨协议导航**。
+       ⇒ 只剩 CDP：token 必然经过浏览器网络层，而那一层我们看得见。
+
+     - **假阳性判据（探针栽过的地方）**：
+       ⚠️ **不扫 `Script` 类型的正文** —— 登录页 `main.*.js` 源码里就有 `token=` 字面量，
+       探针第一版把它当命中、**几秒就「成功」退出，用户根本没来得及登录**。
+       ⚠️ **不看请求 URL** —— 埋点上报 `track-babel.teleai.com.cn/…/report?…&token=<32位hex>`
+       的 token 就在 URL 里，那是匿名标识不是凭据。
+       ⚠️ 只认**三段 JWT** 形态（`eyJ….….…`），32 位 hex 一律不认。
+
+     - **必须复用 `submitLogin` 落盘**（`loginWithBrowser` 内部调它）：那条链已承载
+       「验证 user_info → 落盘 → 回填昵称/有效期 → 拆超时定时器」。
+       另写一份 = 两套凭据形状，是最贵的一类缺陷。由用例反向断言
+       `loginWithBrowser` 体内**不得**出现 `credentials.set`。
+
+     - **RPC 必须 fire-and-forget**：用户输手机号 + 验证码要几十秒到几分钟，
+       阻塞 RPC 会撞传输层超时、前端显示「失败」而后台仍在跑。
+       ⇒ 立即返回 `started:true` + 模块级状态表 `teleagentBrowserLoginStates`，
+       前端轮询 `loginBrowserStatus`。**失败绝不删占位条目** —— 粘贴是退路。
+
+     - ⚠️ **`findBrowserExecutable` 复用 zcode 的**（已导出），
+       但 **`CdpConnection` 不复用**：zcode 那份对**无 id 的事件直接 return**，
+       而本模块的核心正是 `Network.responseReceived` / `loadingFinished` 事件。
+       复制 `findBrowserExecutable` 才是真的会「缺陷修两遍」，复制那个不会。
+
+     - ⚠️ **两个运行时坑由用例抓出来**（都不是类型检查能发现的）：
+       `matchAll` 要求**全局正则**，`JWT_RE` 漏 `g` 会运行时抛
+       `non-global RegExp argument`（探针用 `match`，改写成 `matchAll` 时丢了标志）；
+       Edge 154 的 `Target.getTargets` **不返回 `webSocketDebuggerUrl`**，
+       必须走 `/json/list`（`new WebSocket(undefined)` 只会给一个语焉不详的 `Invalid URL`）。
+
+     回归用例 `tests/unit/teleagent-cdp-login.spec.ts`（14 条：提取判据 7 + 结构断言 6 + 错误分类 1）
+     + `teleagent-rpc.spec.ts`（+5 条接线）。已做**反向验证** 3 处
+     （去掉 `ok` 判定 → 1 红；从 `NON_BODY_TYPES` 删 `Script` → 1 红；
+     `JWT_RE` 漏 `g` → 7 红）。
+     探针 `scripts/probe-teleagent-cdp.mjs`（**不入库**，只读取证）。
+     ⚠️ **端到端仍待用户实跑一次**：CDP 抓 token 已由探针证明可行，
+     但「插件内 `loginWithBrowser` → 落盘 → 卡片昵称变成手机尾号」这条完整链还没走过。
+     ✅ **2026-10-09 更新：这条链已经走通了** —— 凭据落盘、卡片昵称当场变成
+     手机尾号「TeleAgent 2794」、有效期回填为「11月7日 17:59」（= token 的 `iat`
+     加 30 天）。⚠️ 但**不能据此断定走的是 CDP 那一条**：回填发生在两条路共用的
+     `submitLogin` 里，粘贴那条同样会回填。CDP 单独的成功证据仍待一次干净复跑。
+
+   9. **「凭据未配置」还有第三种根因：纯显示滞后**（登录成功后没刷积分行）——
+     **真实缺陷**（用户 2026-10-09 追问「还是未配置」，症状与第 7、8 条几乎同形，
+     根因却完全不同源 —— 这一族缺陷的排查成本正来自这种同形）。
+
+     - **症状**：卡片昵称「TeleAgent 2794」与有效期「11月7日 17:59」**都已正确回填**、
+       粘贴框**没有**弹出（= 后端判 `credentialPresent: true`），**唯独**积分那一行
+       写着「凭据未配置」。
+     - **核对本地存储得到的事实**：`.credentials.yaml` 里 `TELEAGENT_ACCOUNT_6A33DB7B`
+       **确实在**（676 字符、JSON 合法）；池条目 `teleagent-527a8ded` 的
+       `createdAt` = 17:57:33、token 的 `iat` = 17:59:08、`state.json` 落盘
+       17:59:09、截图 17:59:31 ⇒ 凭据**写成功了**，那句报错是**旧的**。
+     - **根因**：面板挂载时 `loadAccounts()` 与 `loadCredits()` **并发**发起，
+       而用户正是在那一刻前后点的「新建账号」⇒ `credits.balances` 查到的是
+       一条**还没有凭据的占位条目**，后端如实回 `error:'凭据未配置'`。
+       而登录成功后的**三处入口**（`login.poll` 的 done 分支、
+       `submitTeleagentCallback`、`startTeleagentBrowserLogin`）**都只调了
+       `loadAccounts()`** —— 昵称/有效期来自 account.list 当场变对，
+       积分行却永远停在挂载那次的答案上，直到用户手动点「刷新积分」或重开面板。
+     - ⚠️ **判据：三项展示里「昵称/有效期正常、只有积分坏」就是这一条。**
+       前两项同源于 `account.list`，积分单独来自 `credits.balances`。
+       **三项一起坏**才是第 7、8 条那类「凭据真没写进去」。
+       这条判据值一次排查：本仓库已有三条同形缺陷，凭文案猜不动。
+     - ⚠️ 顶部那句「一键签到：TeleAgent (电信) 无账号」**不是**新缺陷，
+       也别被它带偏去查 `claimAll`：`checkinNotice` 是**页面级** state、
+       切换 provider 不清，它来自**建号之前**的那一次签到。
+     - ⇒ 修法：三处成功分支各补 `if (canLoadCredits) await loadCredits()`。
+       `loadCredits` 内部本就有 `!canLoadCredits` 门控，且 `claimCredits`
+       早就是这么写的（领取后连列表带余额一起刷）—— 漏的只是登录那三条路径。
+     - ⚠️ **这条修复的正确性依赖后端时序**：`login.poll` 的 `done` 判的就是
+       「凭据是否已写入」，`submitLogin` 也在 `credentials.set` **之后**才落定
+       ⇒ 此刻再查必然看得见新凭据，不会读到同一个中间态。
+       **若将来把 `poll` 的判据换成别的（例如「用户已点击」），它会静默退化成
+       「偶尔还是未配置」** —— 那时该改的是这里的刷新时机，而不是再去怀疑凭据存储。
+     - 回归用例 `credential-presence.spec.ts` 新增 4 条（三处入口各 1 条 +
+       门控 1 条，该文件共 26 条）。反向验证两类：删掉三处刷新 → 3 红；
+       **颠倒两处调用的先后** → 1 红（顺序也必须钉：反过来写等于没修）。
+     - ⚠️️ **反向验证脚本自己差点造假绿（本仓库第一次遇到，值得单独记）**：
+       第一版变异用 `body.replace('await loadAccounts();\n', '')` 删掉原调用，
+       而**本仓库源文件是 CRLF** —— 那行以 `\r\n` 结尾，替换**静默不命中**，
+       于是变异只做了「插入」没做「删除」，代码顺序仍然是
+       `loadAccounts → loadCredits`，用例**照样全绿**，看起来像「反向验证通过」。
+       ⇒ 改成**按行交换**，并让脚本**自证变异生效**（比较区间内两个调用的先后，
+       不对就 `exit 1`）才真的抓到红。
+       **判据：变异脚本必须断言「代码确实变成了我要测的那种坏写法」；
+       脚本静默 no-op 时，「用例变红」这件事根本没有发生过。**
+       ⚠️ 任何 `replace(…, '\n')` 式的文本变异都要先确认换行符
+       （用 `/\r?\n/` 或干脆按行处理）。
+
+⚠️ **取证是两路独立交叉印证**（本机 2.5.3 的 `app.asar` + 官方 2.7.0-rc.1 安装包，逐条吻合）。
+**改这个 provider 前必读 `docs/teleagent-protocol-notes.md`** —— 那里有全部 asar 原文、
+复核方法（含「`main.jsc` 是 bytenode 不可读，但可读部分全在 `main-runtime-*.js` 与
+renderer 的 `index-*.js`，端点表 `ot` 在后者」这条关键提示）、**5 条未决项**与实测清单。
+接线类失效模式由 `tests/unit/teleagent-rpc.spec.ts` 的源码断言锁死（含「三处 provider
+顺序对齐」：客户端 `PROVIDERS` / `REF_PREFIX_TO_PROVIDER` / `registerJetHubRpc` 形参，
+本仓库把 teleagent 统一插在 **minimax 之后、zcode 之前**），并已做**反向验证**
+（8 条错误形态逐一把源码改回去 ⇒ 8 条全部变红）。
 
 Jet Hub 设置页（`plugin-src/client/jet-hub.js`）提供多账号管理与限流自动切换；「一键领取积分」按钮（每日签到）**CodeBuddy、LobsterAI、CodeArts、Qoder、Qoder 中国版与 TRAE 六个面板提供** —— 国际版 WorkBuddy 与 Cline 不提供（两者的后端都没有签到接口）。各面板是**互不相同的协议**（见下「积分领取」）。
 
@@ -2657,18 +3013,18 @@ re-authenticate your Cline account."* —— 与真实原因**毫不相干**，�
 
 ### ⚠️ 坑 2：免费模型是**独立 id**，且只由 `recommended-models` 下发
 
-`cline-free/deepseek-v4.1-flash`（免费）与 `deepseek/deepseek-v4.1-flash`
-（按量计费）是**两个不同条目**。绝不可用「名字含 deepseek」之类模糊匹配判免费 ——
+`cline-free/mimo-v2.6-flash`（免费）与 `xiaomi/mimo-v2.6-flash`
+（按量计费）是**两个不同条目**。绝不可用「名字含 mimo」之类模糊匹配判免费 ——
 那会让用户按免费预期使用却被计费。
 
 两个端点**必须都打**，理由各有实测依据：
 
 | 端点 | 内容 | 认证 |
 |---|---|---|
-| `GET /api/v1/ai/cline/recommended-models` | `{recommended[], free[], clinePass[]}`，**唯一权威的 free 集合** | **不需要** |
-| `GET /api/v1/models` | 460 个 `{id, object, created, owned_by}` —— **只有 id**，无 name/上下文 | 需要 |
+| `GET /api/v1/ai/cline/recommended-models` | `{recommended[], free[], clinePass[], clineCloud[]}`，**唯一权威的 free 集合** | **不需要** |
+| `GET /api/v1/models` | 469 个 `{id, object, created, owned_by}` —— **只有 id**，无 name/上下文 | 需要 |
 
-⚠️ 实测 `/models` 的 460 个 id 里 **`cline-free/*` 零命中** —— 免费模型**只**由
+⚠️ 实测 `/models` 的 469 个 id 里 **`cline-free/*` 零命中** —— 免费模型**只**由
 `recommended-models` 下发。这就是「只调 `/models` 会看不到任何免费模型」的原因。
 `tests/e2e/cline-probe.e2e.spec.ts` 用断言锁死了这一事实（若某天 `/models` 也开始
 下发它们，该用例会失败并提示可简化实现）。
@@ -3234,17 +3590,24 @@ x >= 10 ? String(Math.round(x)) : String(Math.round(x * 10) / 10)
 | 组 | 判据 | 实测规模 |
 |---|---|---|
 | 订阅额度 | `cline-pass/*` | 18 |
-| 免费额度 | **目录下发的 `isFree === true`** | 7（5 `cline-free/*` + 2 `stealth/*`） |
+| 免费额度 | **目录下发的 `isFree === true`** | 19（4 `cline-free/*` + 15 `:free` 后缀） |
 | Cline Cloud | `cline-cloud/*` | 有则显示；**空组不渲染** |
-| 按量计费 | 其余全部（走账户余额结算） | 460+ |
+| 按量计费 | 其余全部（走账户余额结算） | 469+ |
 
 ⚠️⚠️ **免费必须用 `isFree`，不能在前端按前缀猜**：免费集合是远端
 `recommended-models` 的 `free` 数组 + `:free` 后缀 + `cline-free/` 前缀的
-**并集**（见 `cline-models.ts`），而 **`stealth/pixel-canary` /
-`stealth/space-bunny-alpha` 在 `free` 数组里却不在 `cline-free/` 命名空间下**
-—— 按前缀判会把这两条**免费模型错归进「按量计费」**，用户以为要花钱而不敢用。
+**并集**（见 `cline-models.ts`），而 **`stealth/*` 这类在 `free` 数组里却不在
+`cline-free/` 命名空间下** —— 按前缀判会把它们**免费模型错归进「按量计费」**，
+用户以为要花钱而不敢用。
 ⚠️ `isFree` **缺失**（老/外部适配器不报）时保守归入「按量计费」：那是兜底桶，
 「没说免费」比「谎称免费」安全（与全仓「未知不编造」一致）。
+
+⚠️ **2026-10-09 免费集合换过成员**（详见「坑 2」）：新增
+`cline-free/step-5-preview` / `cline-free/solar-mini4`，移除
+`stealth/space-bunny-alpha` / `cline-free/deepseek-v4.1-flash` /
+`cline-free/gemini-3.8-flash`（后三条经实发验证**确已下线**，故免费数从 22 降到 19）。
+⚠️ 该表里 `stealth/*` 的举例保留 —— **判据（不能用前缀猜）没有变**，
+只是当前 `free` 数组里恰好没有 `stealth/*` 了。
 
 #### 展开策略（`groupExpanded`）
 
@@ -4851,7 +5214,9 @@ CN 项目每 3~5 次请求主动换 `machine_id` 以「降低 IDE 端点风控�
 2. **必须带 `X-LobsterAI-Client-Capabilities` 头**：服务端按该头声明的能力**过滤模型集合**。不带时只返回 25 个且**没有 `kimi-k3`**；带 `kimi-k3-agentic-v1` 才返回 26 个。所以模型列表用 `lobsteraiModelsHeaders`（含两个 `X-LobsterAI-Client-*` 头，`Accept` 为 JSON），**不是**只有 4 个基础头的 `lobsteraiAuthHeaders`。
 3. **能力声明还必须含 `thinking-level-control-v1`**：`reasoning_effort: "off"`（关闭思考）在**不带**该能力时服务端直接 HTTP 500；low/high/max/xhigh 不受影响。故 `LOBSTERAI_CLIENT_CAPABILITIES` 是**逗号分隔的两个值**，缺一不可 —— 这是「用户把档位调到 off 才炸」的隐蔽故障。
 
-静态兜底表（`LOBSTERAI_FALLBACK_MODELS`，19 个）是 2026-08-06 抄的快照，**只在远端整体失败时顶替**；远端可用时完全采信远端（不做 buddy 那样的「以兜底表为准」裁剪）。它天然会逐渐过时（实测已缺 8 个新模型、多了 1 个已下架模型），排查「模型看不到」时**先确认远端到底返回了什么**，别直接看兜底表。
+静态兜底表（`LOBSTERAI_FALLBACK_MODELS`）**只在远端整体失败时顶替**；远端可用时完全采信远端（不做 buddy 那样的「以兜底表为准」裁剪）。它天然会逐渐过时 —— **排查「模型看不到」时先确认远端到底返回了什么，别直接看兜底表**。
+
+⚠️ **2026-10-09 已按远端全表重采**（旧表是 19 条的 2026-08-06 快照）：远端实测 **30 条**，旧表**缺 12 条**（`glm-5.3` 系、`qwen3.8` 系、`kimi-k3`、`deepseek-flash` 等）、**多 1 条**已撤下的 `doubao-seed-2-1-pro-260628`（换成 `-260915`）。**兜底表过期不是无害的**：远端失败时用户会少看到 12 个可用模型。同时 `contextWindow` 从「全部 131072 的估值」改为**远端权威值**（30 条里 21 条下发，多数 `1000000`），仅远端未下发的 9 条沿用估值；展示名也改用远端的 `modelName`（旧表 19 条里 16 条的 name 就是裸 id，列表里无从辨认）。
 
 ### 远端模型参数必须消费（不能只看 id/name）
 
@@ -5062,6 +5427,125 @@ const claim = deps.claim ?? (claimDailyCheckin as unknown as NonNullable<…>)
 - 累加后 `roundCredits` 规整两位小数（多包浮点噪声会放大成 655.67000031）
 - 失败时 `balance` 为 `null` + `error`，卡片显示原因而非 0
 - RPC：`credits.balances`；前端 `AccountCard` 的 `CreditBalanceRow`，面板有「刷新积分」按钮
+
+## 每日自动签到（打开 DSH 时，2026-10-13）
+
+**它做什么**：每次打开 DSH，自动对**全部 10 个支持签到的渠道**依次执行一次签到。
+手动入口（页头「一键签到」）不变，两者**共用同一份领取实现**。
+
+**为什么不是每天固定钟点**：DSH 不是常驻服务 —— 「每天 10:05 跑」实际退化成
+「恰好那一刻 DSH 开着才签」，**比打开就签更不可靠**。代价是必须自己记住今天
+签过没有（下面的闸门）。用户 2026-10-13 明确选了「打开 dsh 时触发」。
+
+### 文件分工（改之前先看清，否则会踩循环 import）
+
+| 文件 | 职责 |
+|---|---|
+| `src/auto-checkin.ts` | **纯**判据 + 执行器：`utc8DayKey` / `decideAutoCheckin` / `runAutoCheckin` / `sanitizeAutoCheckinState` / `AUTO_CHECKIN_PROVIDERS` |
+| `src/auto-checkin-store.ts` | 独立文档 `$DSH_HOME/jet-hub/auto-checkin.json`（原子写） |
+| `src/auto-checkin-controller.ts` | 装配层：状态 + 执行 + 日志，供 RPC 与启动路径共用 |
+| `plugin-src/client/auto-checkin-panel.js` | 面板状态条的**纯逻辑**（单测环境没有 react） |
+
+⚠️ **controller 必须单独一个文件**：把它放进 `auto-checkin.ts` 会让后者 import
+`AutoCheckinStore` 的类型，而 store 又要 import 执行器的 `sanitize` ⇒
+**循环 import**。方向必须是单向的。
+
+### 闸门（`decideAutoCheckin`，用户定值，不要擅自改）
+
+| 情形 | 行为 |
+|---|---|
+| 开关关闭 | 不执行（且**不打日志** —— 用户关掉后每次启动刷一条「已跳过」是噪音） |
+| 当天（**UTC+8**）已成功签完 | 跳过（`done`） |
+| 当天有失败 / `inactive` | 下次打开 DSH 再试，当天最多 **3** 次 |
+| 跨到新的一天 | 计数归零、重新可签 |
+
+⚠️ **`inactive`（暂无活动）必须算「未完成」**：多数活动**每日 10:00（UTC+8）
+刷新**。09:30 启动时服务端回的就是 `inactive`，若算作已完成，用户当天**再也签
+不到** —— 那正是本功能要消灭的漏签。判据在 `channelNeedsRetry()`。
+
+⚠️ **「渠道没有账号」（summary 全 0）不算未完成**：否则每天对一个空渠道空转，
+且它每次都「失败」，会把当天 3 次机会耗光。
+
+⚠️ **UTC+8 必须写死**（`AUTO_CHECKIN_UTC_OFFSET_MS` + **算术偏移 + `getUTC*`**）：
+额度按**服务端**账期结算。用 `getFullYear()` / `setHours` 之类按本机时区运算，
+会在非 UTC+8 的机器上算出**错的日界**（偏东 ⇒ 当天闸门过早失效、重复签到；
+偏西 ⇒ 该签的时候不签）。与 `nextUtc8DayStartMs()` 同一条教训。
+⚠️ 它**只用于本地闸门**，不参与任何请求参数 —— 判错最坏是多跑一次（服务端幂等）。
+
+⚠️ **`sanitizeAutoCheckinState` 的日键正则必须校验月 / 日范围**，不能只写
+`\d{4}-\d{2}-\d{2}`：`2026-13-99` 这类脏数据虽然匹配，却与「今天」永不相等
+⇒ **每次启动都当成新的一天 ⇒ `attempts` 归零 ⇒ 3 次上限被完全绕过**。
+
+### 共享实现（`claimAllForProvider`）
+
+`credits.claimAll` 的实现 2026-10-13 从 `jet-hub-rpc.ts` 的 case 里抽成**模块级
+函数**，RPC 与自动签到共用。理由：每条「这个 provider 要不要预检状态」的注释
+背后都是**一次真实缺陷**（TRAE「claim 幂等无法区分」、TeleAgent「不返回幂等码」、
+LobsterAI「流程自带 slot/context 预检」…），复制一遍等于把那些坑再踩一遍。
+
+- 不支持签到（cline / raccoon / 未知 id）→ 抛 `UnsupportedClaimProviderError`，
+  RPC case 捕获后转成规范的 `bad-request`（行为与重构前逐字一致）；
+- 自动签到侧靠「逐渠道 `try`」把同一异常记为该渠道失败。
+
+⚠️ **`runAutoCheckin` 的 `failed` 只能取 `summary.failed`**：`summarizeChannels()`
+已把「整渠道失败」按 1 计（它没有逐账号明细）。再加一次 `results.filter(!ok).length`
+会把同一个失败算两遍（写单测时实测到：期望 1 实得 2）。
+
+### 启动接线（`src/index.ts`）
+
+- 触发点在**首轮凭据续期之后**（`.then(() => autoCheckin.trigger())`）：启动瞬间
+  池里可能整批是过期凭据，直接签会得到一片认证失败，而**失败会消耗当天次数**；
+- ⚠️ 续期整批失败**不阻断**签到（`.catch()` 只为记日志）：不签会**直接损失当天
+  额度**，那是最坏结果；
+- 不能 `await` 在插件加载路径上（十路真实请求 + ZCode 要拉起 chromium）。
+
+### RPC 与面板
+
+- 动词只有两个：`checkin.auto.get`（读快照）/ `checkin.auto.set`（写开关）。
+  **没有触发动词** —— 让「渲染一次面板」产生十路写请求是不可接受的。
+- `enabled` **严格判 `typeof === 'boolean'`**：真值强转会造出「字符串 `'false'`
+  也把开关打开」，而这个开关控制的是真实写请求。
+- 装配层缺席（headless / 单测替身）→ 回 `jet-hub/auto-checkin-unavailable`，
+  **不伪造 `enabled: false` 快照**（那会让面板显示「已关闭」，用户点开关却报错）。
+- 面板状态条在**页头下方**（页头那排按钮已排满，塞进去会把「关闭」挤到第二行）；
+  失败与「暂无活动」渠道**逐条列出原因**（只给计数，用户与排查者都无从下手）。
+- ⚠️ **`loadAutoCheckin` 必须定义在依赖它的 `useEffect` 之前**：依赖数组在渲染时
+  立即求值，写在后面会命中 `const` 的 TDZ，**整页白屏**（有用例钉死顺序）。
+
+### 状态为什么单独一份文档
+
+与「锁定永久积分」同因（见该节）：`$DSH_HOME/jet-hub/state.json` 是**整体替换**
+语义，同机上另一条工作区里的**旧版本代码**不认识新字段，每次整体写入都会把它
+抹掉。对自动签到而言，被抹掉的后果是：开关自己关掉 / 闸门失效（每次都重签，
+而 ZCode 每次都要过 captcha）。
+
+⚠️ **「文档损坏」不能回 `exists: false`**：那会让调用方把默认状态再写一遍，
+而默认值是 `enabled: true` —— 用户关掉的开关被静默打开。
+
+### 回归测试
+
+- `tests/unit/auto-checkin.spec.ts`（42 条）：日界 / 闸门 / sanitize / 重试判据 /
+  执行编排 / **能力表对账**（与 `credits-capabilities.js` 的 `checkinProviders()`
+  逐条含顺序比对 —— host 无法 import 那份表，只能靠用例守住漂移）；
+- `tests/unit/auto-checkin-store.spec.ts`：文件后端往返 / 损坏 / 裸文档 / 原子写 /
+  目录推导与账号池同源；
+- `tests/unit/auto-checkin-panel.spec.ts`：状态条文案与四种配色，含**顺序断言**
+  （TDZ 那条）与动词名断言；
+- `tests/unit/auto-checkin-rpc.spec.ts`：两个动词的行为 + 「触发不在 RPC 里」+
+  「共用 `claimAllForProvider`」的源码级断言。
+
+### ⚠️ 源码级断言的定位方式（这次重构暴露的真实问题）
+
+把实现抽成模块级函数后，`case TELEAGENT.id:` / `case RACCOON.id:` 这些文本
+**在 `claimAllForProvider` 里也出现了**，于是若干用
+「`indexOf(某文本)` 取起点再切片」的既有用例**跑去新函数里找账号刷新逻辑**，
+以「切片里找不到某段文本」失败 —— 根因与它们要守的行为毫无关系。
+
+⇒ **断言的起点必须是语义锚点**（函数名 / case 名 / 限定在某个 case 之内），
+不能是「某文本第一次出现的位置」。共享锚点收在
+`tests/unit/jet-hub-rpc-source.ts`（`claimAllImplementation()`）。
+⚠️ 新增「按 provider 分派」的代码时，若在既有 case 之前引入同形文本
+（`case X.id:` / `provider === X.id`），先跑一遍 `tests/unit/*-rpc*.spec.ts`。
 
 ## 积分能力必须在请求前判定（`credits-capabilities.js`）
 
@@ -5338,7 +5822,8 @@ loomy: { balance: true, dailyCheckin: true, onboardingTasks: true }
 | `defaultEffort` | ⚠️ **本插件自己的 `high`** | **不采信远端的 `low`**（见下） |
 | 中文展示名 | 本文件 `LOOMY_EFFORT_NAMES` | `none:关闭思考 low:低 medium:中 high:高 xhigh:极高` |
 
-实测 8 个 chat 模型**完全一致**：`['none','low','medium','high','xhigh']`。
+实测 9 个带档位的 chat 模型**完全一致**：`['none','low','medium','high','xhigh']`
+（远端共 10 条 chat，其中 `auto` 未下发档位）。
 远端还带 `reasoning_catalog_version`（catalog 哈希），故档位随服务端更新、**无需改代码**。
 兜底表（`loomy-product.ts`）存同一份实测值，只在远端整体失败时顶替 ——
 ⚠️ **抽成 `LOOMY_EFFORTS` 常量而不是逐条写 8 遍**，避免上游变更时漏改其中几条。
@@ -6811,6 +7296,264 @@ rail 宽度：实测（无头 Edge + 真实源码 STYLES，rail 高 446px、纵�
    这一步直接验证「插件能加载并注册设置页」，是 tsc 与单测都覆盖不到的一层。
 3. **产物层**：新能力在、旧能力未被破坏、源码与部署产物哈希一致。
 
+## ⚠️ Step Code（阶跃星辰 StepFun）provider：八个不能凭直觉改的点
+
+`stepcode` 是第 15 个面板、第 14 个 LLM 路由。实现是独立一套 `src/stepcode*.ts`
+（`stepcode-product` / `stepcode` / `stepcode-oauth` / `stepcode-auth` /
+`stepcode-adapter`），适配器**复用** `src/openai-compat.ts`（与 qoder /
+teleagent 同形），**没有** messages 层。
+
+**取证来源（全部逐字摘录，非推测）**：官方安装脚本
+`https://static-openapi.stepfun.com/stepcode/install.ps1` → 发行清单 `latest.json`
+→ **0.1.3**（`generatedAt: 2026-10-08`）→ `step-0.1.3-windows-x64.zip`
+（SHA256 `43f6d0f4…3d93411e`，**已校验一致**）。包内 `step.exe` 是 **Bun 单文件
+可执行**（126 MB），内嵌 JS bundle **未混淆、保留全部标识符与模块注释** ——
+故所有常量都是**直读**，不需要反编译。
+**第二来源（交叉印证）**：官方文档
+`https://platform.stepfun.com/docs/zh/guides/developer/integrations/deepseek-harness.md`
+（StepFun 自己写的 DSH 接入指南）。
+
+### 1. ⚠️⚠️ 协议族是 **OpenAI 兼容**，而发行包里的文档说 Anthropic —— 以代码为准
+
+同包 `docs/step-integration.md` 写道 *"The built-in Step provider uses pi's
+`anthropic-messages` adapter. Pi appends `/v1/messages` …"*，并称启动时由
+`step/models-endpoint-repair.ts` 把旧投影「修回 `anthropic-messages`」。
+
+**该说法在 0.1.3 里已不成立**，两条独立证据：
+1. `STEP_MODEL_API = "openai-completions"` 是**唯一**取值，全 bundle 仅 4 处引用，
+   全部在 `step-provider/index.js`（`stepModelConfig` / `normalizeStepModelConfig` /
+   `normalizeStepModel` / 常量声明）；
+2. 文档点名的修复模块 `models-endpoint-repair` 在 `step.exe` 里 **0 命中**
+   （该模块已不存在）。
+
+⇒ 推理走 `POST https://api.stepfun.com/step_plan/v1/chat/completions`，
+与官方 DSH 集成文档给的 `api: openai-completions` + `baseURL: …/step_plan/v1`
+**一致**。⚠️ 改这里之前先复核上述两条判据 —— 选错协议族会整条链路 404，
+而 404 的表象与「base URL 少了 `/v1`」**一模一样**，极易误判。
+
+⚠️ **教训（比结论更值得记住）：随包文档会滞后于代码。**
+`docs/` 与 `bundle` 同在一个发行包里，仍可能互相矛盾 ——
+**判据取「代码 + 官方对外集成文档」，不取「包内说明文档」**。
+
+### 2. 登录是「浏览器授权 + **本地轮询**」设备流 —— 全自动，无需粘贴
+
+```
+1. pollToken = randomBytes(32).hex                    (step-provider/index.js)
+2. POST {authBase}/api/stdhttp/v1/cli-login/init       (login-client.js)
+     headers: accept + authorization: Bearer <pollToken> + content-type
+     body:    { profile, origin, client:{name,version,platform} }
+     resp:    { flow_id, poll_interval_sec, expires_at }   ← expires_at 是**秒**
+3. 浏览器打开 {authBase}/cli-login-remote?flow_id=<flow_id>
+4. GET {authBase}/api/stdhttp/v1/cli-login/poll/{flow_id}
+     resp: { state:"pending" } | { state:"failed", reason } | { state:"ready",
+             credential:{api_key}, uid? }                ← uid 在**顶层**
+```
+
+⚠️ **`pollToken` 是本地随机值，且当作 `Authorization: Bearer` 发送**
+（不是 query、不是自定义头）。它把「本地这次轮询」与「浏览器里那次授权」绑在
+一起，服务端据此决定把谁的 `api_key` 交给谁。搞错传递方式会得到语焉不详的 401。
+
+⚠️ **`expires_at` 是秒级 Unix 时间戳**（官方 `init.expiresAt * 1000 - Date.now()`）。
+当成毫秒会让登录在 1970 年就「已超时」，**一次轮询都不发**（单测有钉死）。
+
+⚠️ **响应带信封**：HTTP 200 也可能是失败（`{status:<非0>, desc:"…"}`）。
+官方判据是 `status !== undefined && status !== 0` —— **`status` 缺席不算失败**
+（poll 的成功响应就可能没有它）。写成 `status !== 0` 会把正常响应全判失败，
+**登录永远走不通**。
+
+⚠️ **它是唯一「全自动且不起本地端口」的登录**：不像 teleagent 要用户粘贴回调
+URL，也不像 raccoon / loomy 要起本地登录页。⇒ **不需要任何扩展动词**
+（无 `stepcode.*`），前端也**不需要**专属 UI，与其余面板共用同一条
+「弹窗 + `login.poll`」路径（单测有钉死「不得引入 `stepcode.*` 动词」）。
+
+### 3. 凭据是**静态 api_key**：没有续期端点，`refresh` 退化为探测
+
+官方 `loginStepOAuth()` 返回 `{ access: ready.apiKey, refresh:
+STEP_STATIC_REFRESH_TOKEN, expires: Number.MAX_SAFE_INTEGER }`，而
+`refreshStepOAuth()` 的全部实现是「校验哨兵串后原样返回」，**不发任何请求**。
+
+⇒ 三个结论：
+- 订阅登录换来的**就是一个 API Key**（不是 access/refresh token 对）；
+- `refresh` 字段是**哨兵字符串** `"step-static-credential"`，**不能**拿去请求
+  任何端点（不存在这样的端点）；
+- `isStepcodeRefreshable()` **恒 `false`**，账号池占位条目也写
+  `refreshable: false`（写成 true 会让定时器每 5 分钟对一个不可能成功的操作
+  发一轮请求 —— 与 teleagent / loomy / zcode 同型）。
+
+⚠️ **有效性探测用 `GET /v1/models`** —— 这**不是**我挑的端点，而是官方行为：
+发行包 `docs/step-integration.md` 原文 *"…`step login status` validates the
+credential against that profile's `/v1/models`"*。
+
+⚠️⚠️ **`probeCredential()` 是三态**（`true` / `false` / `undefined`），
+**只有 `false`（明确的 401/403）才抛终态错误**。网络错误与 5xx 返回 `undefined`
+⇒ 静默跳过。写成布尔会让**一次网络抖动**把用户逼去重新登录，且池里的账号被误标。
+
+### 4. ⚠️ 模型目录是**账号级**的，且兜底表**刻意为空**
+
+官方 `STEP_MODELS = []`（**没有本地种子表**），目录**完全**依赖
+`GET /v1/models` 实时拉取；官方文档明示「可用模型和额度取决于账户权限」
+（Mini / Plus / Pro / Max 看到的目录不同）。
+⇒ `fetchModels(pool)` **必须带账号池当前可用账号的 Bearer**（`index.ts` 里传 `pool`）。
+
+⚠️ **不要编造兜底条目**：目录里的 `enable_vision_input` /
+`reasoning_effort_support_list` / `max_input_tokens` 都是**服务端下发的账号级
+事实**，本地写死会在「远端失败降级」时凭空改变图片支持与思考档位。
+远端失败时如实返回空目录（用户看到「无可用模型」），比给一张可能对不上账号
+权限的假表安全（与 teleagent 兜底表 `supportsImage` 恒 false 同因）。
+
+⚠️ **类型过滤是「条件式」的**（官方 `fetchStepModels` 原文）：
+```js
+const typed = entries.some((e) => e.modelType !== undefined)
+const usable = typed ? entries.filter((e) => … STEP_USABLE_MODEL_TYPES.has(e.modelType))
+                     : entries
+```
+即**只有当至少一个条目带 `model_type` 时才启用白名单**；一个都没下发时**全部保留**。
+照抄成「无条件过滤」会在服务端改字段名时把目录**静默清空**。
+白名单原文是 `new Set(["大语言模型", "路由模型"])`（**中文类型名**）。
+
+⚠️ 远端没给窗口时用官方默认 `256000`；展示名**就是 id**（远端不下发独立展示名，
+**不编造**「Step 5 Preview」这类好看的名字）。
+
+### 5. ⚠️ 思考档位：只声明远端真有的，且**不声明 `defaultEffort`**
+
+远端 `reasoning_effort_support_list` 是**纯字符串数组**，官方
+`stepThinkingLevelMap()` 把它转成 pi 的 `thinkingLevelMap`。我们的三条口径：
+
+| 项 | 规则 | 依据 |
+|---|---|---|
+| `efforts` | **只取远端数组里的值**（原序） | 官方 `readStringArray` |
+| `defaultEffort` | **不声明** | 远端**没有**下发默认档 |
+| `reasoning` 键 | 无档位 ⇒ **整个键不产出** | 与 Qoder 同口径 |
+
+⚠️ **不给 `defaultEffort` 是有意的**：DSH 类型注释明示 *"`defaultEffort` …
+Absence preserves the provider's own default"* —— 缺席就是「跟随上游默认」，
+正是我们要的。硬编一个默认档（比如 `high`）会**顶格消耗思考 token**，
+而思考 token 计入 `completion_tokens`、与正文共享额度
+（AGENTS.md 在 TRAE 那条记过这个代价）。
+
+⚠️ **档位展示名用中文**（DSH 直接渲染 `efforts[].name`，不本地化）。
+⚠️ 阶跃官方文档**未给**这六个档位的中文名（CLI 的 TUI 直接显示英文档位名），
+故用与 Qoder 官方 i18n **一致**的译名，保证同一份界面里两家用词统一：
+`off:关闭思考 minimal:最小 low:低 medium:中 high:高 xhigh:极高 max:最大`。
+
+⚠️ **档位值原样下发到请求体的 `reasoning_effort`**，**不做白名单校验** ——
+校验只会把「服务端新增档位」变成静默丢弃（与 TRAE 同口径）。
+
+### 6. ⚠️ **不声明 `defaultMaxTokens`**（官方那个 `maxTokens: contextWindow` 是 clamp 值）
+
+官方 `stepModelConfig()` 写的是 `maxTokens: contextWindow`（输出上限 = 上下文
+窗口）。但那是 **pi 内部用于 clamp 的上限，不是要发给服务端的值** ——
+DSH 的 `defaultMaxTokens` 会被**物化进请求**（类型注释：*"materialized when
+callers omit one"*）。照搬就会给每个请求塞一个 1M 的 `max_tokens`。
+远端目录**没有**独立的输出上限字段 ⇒ 保守不声明（单测有钉死）。
+
+### 7. 图片按模型的 `enable_vision_input` 判定，不支持就**报错**
+
+⚠️ 收到图片但模型不支持时抛 `UNSUPPORTED_CONTENT`，**绝不静默丢图**
+（静默会让用户以为模型看到了图片 —— 与 cline / lobsterai / minimax /
+teleagent 的既有契约一致）。模型支持但 `readImage` 未接线时同样抛错。
+
+⚠️ 图片块的判据是 `block.attachment.attachmentId`（`openai-compat.ts` 的
+`collectImages`），不是 `block.url` —— 写用例时别照直觉造数据。
+
+### 8. 接线口径：`stepcode` 统一插在 **zcode 之后、antigravity 之前**
+
+三处顺序必须对齐（客户端 `PROVIDERS` / `REF_PREFIX_TO_PROVIDER` /
+`registerJetHubRpc` 形参），`antigravity` 恒为**最后一个**。
+`stepcode-wiring.spec.ts` 有「三处顺序对齐」用例钉死。
+
+⚠️ 它**进** `REF_PREFIX_TO_PROVIDER`（凭据由本插件持有，ref 形态
+`STEPCODE_ACCOUNT_{HEX}`）—— 与 antigravity 相反（那个刻意不进）。
+
+⚠️ **能力矩阵登记为 `{balance:false, dailyCheckin:false}`，这是「未探明」
+而非「实测没有」**：
+- 登录 API 前缀 `/api/stdhttp/v1/cli-login` 在 bundle 里**只有** `/init` 与
+  `/poll/{flow_id}`，**没有任何** usage / quota / balance 端点；
+- 同包 `docs/step-integration.md` 把 `/status`（额度展示入口）明确标为
+  **"not yet ported"** —— 官方 CLI **自己都还没有**额度面板；
+- Step Plan 是**订阅制**，不是「每日签到领积分」那套。
+
+⚠️⚠️ **这是 AGENTS.md 在 teleagent 上记过的同型结论修正的**前置提醒**：
+初版按英文关键词搜不到就登记 `false`，随后被用户的客户端截图直接推翻
+（真实端点路径是 `user/portal/companyStore/…`，**不含** `credit|point|signin|
+checkin` 任何一个词）。⇒ 若用户后续提供 Step Plan 用量页面的截图/抓包，
+**先按截图字段反查端点**，不要再用关键词碰运气。
+
+### 9. ⚠️⚠️ 「登录成功但模型列表里没有这个 provider」——**两层缓存必须都清**
+
+**真实缺陷**（2026-10-09 用户报障，截图：模型选择列表里没有 Step Code）。
+
+**根因是两层独立缓存叠加**，漏任一层症状完全相同：
+
+| 层 | 缓存位置 | 短路判据 | 清理方式 |
+|---|---|---|---|
+| **① 服务端** | `StepcodeAdapter.remoteModels` | `if (this.remoteModels !== undefined) return` | `invalidateModelCache()` |
+| **② 客户端** | `dsh-client-ui-model-selection` 的 `ModelCatalogDirectory` | `status === 'ready'` 即返回缓存 | 广播 `llm/adapters-updated` |
+
+**缺陷时序**（每步都无害，叠加起来才致命）：
+1. 用户**首次**打开模型设置时还没登录 ⇒ `listModels` 走**目录门控**
+   （`providerCatalogVisible`）返回 `[]`；
+2. 旧实现把这个 `[]` 写进 `remoteModels` ⇒ 服务端**永久锁死空目录**
+   （`loadModels` 开头的 `if (this.remoteModels !== undefined) return` 直接短路，
+   再不去拉）；
+3. 客户端把空目录存成 `ready` ⇒ 之后**永不重拉**；
+4. 用户登录成功、凭据已落盘，但**没有任何事件**通知两侧 ⇒ 列表始终为空。
+
+**为什么本 provider 首个暴露**：Step Code 的兜底表**刻意为空**
+（官方 `STEP_MODELS = []`），所以「未登录 ⇒ 空目录」必然发生。
+teleagent 有非空兜底表，同样两条缓存都在，但空目录不会出现 ⇒ 掩盖了这个坑。
+
+**修复（三处，缺一不可）**：
+1. `loadModels()`：**空目录不得落缓存**（`[]` 只来自「失败/未就绪」两种暂时状态，
+   不具缓存价值）；**非空**兜底表仍缓存。
+2. `account.create` 的 stepcode 分支：登录成功后先
+   `modelAdapters?.stepcode?.invalidateModelCache?.()`
+   **再** `broadcastCatalogChanged(ctx)` —— **顺序不可颠倒**，反了客户端重读时
+   服务端仍返回缓存的空目录（白跑一趟，症状不变）。
+3. `ModelCatalogSource` 声明可选 `invalidateModelCache?(): void`
+   —— 漏声明会 TS 报错；若靠 `as never` 绕过，运行时 `?.()` **静默不执行**。
+
+⚠️ **凡「登录后目录才可用」的 provider 都要照做**（`listModels` 有门控 ⇒ 必然
+先经历一次空目录）。判断方法：**兜底表是否为空**？为空者必然踩到。
+
+⚠️ **排查时先看时间线，别急着怀疑代码**：本次第一现场是
+「DSH 进程启动于 12:32，而 stepcode 源码 20:02 才诞生」——
+那是**另一个**问题（进程模块缓存为旧版 ⇒ `unknown provider`），重启即解。
+两个问题症状相邻但成因无关：
+`unknown provider` = 服务端**没有这个分支**（旧模块）；
+模型列表为空 = 分支有、但**两侧缓存都是空的**。
+
+⚠️ **写这类「按行切分支体」的断言要当心**：本次一度用
+`indexOf('...ANTIGRAVITY_PROVIDER_ID')` 当切片终点，而该标识在 stepcode 分支
+**之前**就出现过一次 ⇒ 切出空串 ⇒ 断言恒假失败。改用**全文相对顺序断言**
+（`indexOf` 配偏移量）后稳定 —— 见该用例的注释。
+
+### 回归防线
+
+- `tests/unit/stepcode.spec.ts`（46 条）：凭据形状 / URL 归一（含**循环**剥 `/v1`）/
+  envelope 判据 / 目录归一与条件式过滤 / init 请求形态（pollToken 走 Bearer、
+  profile/origin/client 三字段）/ poll 三态（uid 在顶层）/ **秒级 expires_at** /
+  可重试判定 / 两步式 startLogin（含 close 幂等）/ resolveModel（中文档位名、
+  不声明 defaultEffort 与 defaultMaxTokens）/ stream（tools 真下发、
+  `reasoning_effort` wire 字段、图片不支持即抛、401→AUTH）。
+- `tests/unit/stepcode-wiring.spec.ts`（16 条）：index.ts 六处接线点、
+  refresh 用 `available.entry.*`、`resolveCredential` 用 `STEPCODE.id`、
+  `fetchModels(pool)`、RPC 两处形参与 create/refresh 分支（含「不得 await
+  `started.result`」）、去重判据用 `uid`、恢复表含 `['STEPCODE','stepcode']`、
+  客户端 15 个面板与展示名一致、图标与 CSS、能力矩阵、**三处顺序对齐**。
+- ⚠️ **已做反向验证**：把 `isStepcodeRefreshable` 改 true、`status` 判据改成
+  `!== 0`、`expires_at` 当毫秒、目录过滤改成无条件、URL 归一去掉 `while`、
+  硬编 `defaultEffort` —— **共 15 条变红**；还原后 62 条全绿。
+
+### 排查脚本（**不入库**，见上文「scripts/ 里哪些入库」）
+
+取证靠「从官方 CDN 下载发行包 + 在内嵌 bundle 里按模块标记提取源码」，
+思路几十行即可复现：`install.ps1` 里的 `$BaseUrl/latest.json` 给出包地址与
+SHA256；`step.exe` 内嵌的 JS 以 `// ../providers/dist/<模块>.js` 注释分段，
+按标记截取并清洗为 ASCII 即可读（**不需要反编译器**）。
+⚠️ 本机 `github.com` 与 `api.github.com` 被 DNS 解析到非公网地址而不可达，
+但官方 CDN（`static-openapi.stepfun.com`）可达 —— 取证走 CDN，不要依赖 GitHub。
+
 ### ⚠️ VibeX（曾接入的面板，2026-10-02 **已整块移除**）
 
 **现状：代码、面板、测试全部删除，不要照着下面去"修复"一个不存在的东西。**
@@ -6882,6 +7625,40 @@ token 在系统钥匙串 / 凭据管理器里由官方二进制自管，一个�
    （`agy models` 不打印授权 URL，等 watchdog 杀进程）—— 只有用户显式点「刷新」
    才允许慢。`ModelCatalog` 的失败负缓存（TTL 内不再 spawn）是防「5s 轮询叠出
    常驻挂起子进程」的（2026-10-02 永久 loading 故障的根因，用例锁死）。
+
+6. **⚠️ 模型表：`agy models` 的返回是「服务端按账号资格过滤后」的结果，
+   不是客户端能力清单**（2026-10-09 实测，agy **1.3.2**）。
+   故**不能**把「某次没看到某个模型」当成「该模型已下线」——
+   判据（复核脚本 `scripts/probe-antigravity-catalog.mjs` /
+   `probe-antigravity-spawn.mjs`）：
+
+   - 本机 `agy models` 秒回 **14 条原始条目** → `foldEfforts` 折叠后 **7 条**
+     （`gemini-3.8/3.7/3.6-flash` + `gemini-3.1-pro` + 3 个非 Gemini 条目）；
+   - 而 `DEFAULT_FALLBACK_MODELS` 是 **8 条** —— 多出的那条是
+     **`gemini-3.5-flash`**，本次**未下发**；
+   - **但它不是「已下线」**：① 1.3.2 二进制里仍完整枚举它
+     （`gemini-3.5-flash` / `-low` / `-lite` / `-extra-low`），且与
+     `3.6/3.7/3.8` 在**同一批模型常量**里；② 二进制含
+     **`Ineligible tier: %+v`** 与 **`entitlement.userTier`**，紧邻
+     `fetchAvailableModels`；③ **决定性证据**：拉取失败时 stderr 原文是
+     `Error: Eligibility check failed: Post
+     "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"` ——
+     **每次拉取前都要先向 Google 做资格校验**，不过就一条都不返回
+     （实测网络受限时回 `code=1` + 0 条，通畅时秒回 14 条）。
+
+   ⇒ 因此 `gemini-3.5-flash` **保留在兜底表**（红线：「某次实测没看到」不能
+   推广成「不存在」）。它只在 `agy models` 失败时才出现在选择器里，代价可接受。
+   ⚠️ 若将来确认它真已退役，应像 CodeArts 的 `RETIRED_MODEL_IDS` 那样**显式**删除，
+   并同步 `antigravity-adapter.spec.ts` / `antigravity-streaming.spec.ts`
+   （两处用例都以 `gemini-3.5-flash` 作 fixture 模型名）。
+
+7. **⚠️ 探针文件里的 `afterAll` 必须用顶层导出，不能写 `it.afterAll`**
+   （真实缺陷，2026-10-09 修）：`it.afterAll` **不存在**，会让
+   `antigravity-probe.e2e.spec.ts` 在**收集阶段**就抛
+   `TypeError: it.afterAll is not a function` ⇒ 整个文件 `no tests` 全部跳过。
+   ⚠️ **这个失败形态极易误判**：报告里显示成「没有用例」，看起来像
+   「闸门没配 / 探针被 skip」，而不是「探针坏了」—— 于是 Antigravity 的
+   端到端验证**静默失效**。修好后该探针 5 条全过。
 
 其它不可回退的细节：主账号（systemHome）槽位**不可删**（删掉后授权成功也无处
 回填 email/配额，面板显示「还没有账号」的实测链路）；`poolAuth.beginPrimary`

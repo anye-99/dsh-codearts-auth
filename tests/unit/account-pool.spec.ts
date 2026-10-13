@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { AccountPool } from '../../src/account-pool.js'
+import { AccountPool, ALL_MODELS_RATE_LIMIT_KEY } from '../../src/account-pool.js'
 import type { ProviderAccountEntry } from '../../src/types.js'
 
 /**
@@ -354,6 +354,76 @@ describe('AccountPool', () => {
       // a 排首位但对目标模型限流中 → 应跳到 b
       await pool.reorderAccounts('buddy', ['a', 'b'])
       expect((await pool.getAvailableAccount('buddy', 'deepseek-v4-flash'))?.entry.id).toBe('b')
+    })
+
+    /**
+     * 整账号标记（{@link ALL_MODELS_RATE_LIMIT_KEY}）—— **真实缺陷的防回归**。
+     *
+     * 背景（用户报障 2026-10-10）：Qoder 的日额度（业务码 110
+     * `Billing daily count exceeded`）实测按**账号**结算 —— 同一账号换
+     * `qfmodel` → `dfmodel` → `qmodel_38max` 三个模型全部被拒。早期实现只写
+     * 「模型 → 时刻」的按模型标记，于是用户手动换模型后池**又选中该账号**，
+     * 立刻再撞同一堵墙（会话证据：`dfmodel` 仅 0.4 秒后即被拒）。
+     */
+    it('整账号受限时，换**任何**模型都跳过该账号（Qoder 日额度按账号结算）', async () => {
+      const limited = Date.now() + 3600_000
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_A'), JSON.stringify({ access_token: 'a' }))
+      await pool.addAccount(makeMockAccount({
+        id: 'a', credentialRef: 'BUDDY_ACCOUNT_A',
+        // 只写整账号保留键，**不写**任何具体模型
+        modelRateLimits: { [ALL_MODELS_RATE_LIMIT_KEY]: limited },
+      }))
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_B'), JSON.stringify({ access_token: 'b' }))
+      await pool.addAccount(makeMockAccount({ id: 'b', credentialRef: 'BUDDY_ACCOUNT_B' }))
+      await pool.reorderAccounts('buddy', ['a', 'b'])
+
+      // ⚠️ 三个**不同**的模型都必须跳过 a —— 这正是旧实现漏掉的那一条。
+      for (const model of ['qfmodel', 'dfmodel', 'qmodel_38max']) {
+        expect(
+          (await pool.getAvailableAccount('buddy', model))?.entry.id,
+          `整账号受限时模型 ${model} 仍选中了受限账号 a`,
+        ).toBe('b')
+      }
+    })
+
+    it('整账号标记过期后该账号恢复可选（不永久锁死）', async () => {
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_A'), JSON.stringify({ access_token: 'a' }))
+      await pool.addAccount(makeMockAccount({
+        id: 'a', credentialRef: 'BUDDY_ACCOUNT_A',
+        modelRateLimits: { [ALL_MODELS_RATE_LIMIT_KEY]: Date.now() - 1000 },
+      }))
+      await pool.reorderAccounts('buddy', ['a'])
+      expect((await pool.getAvailableAccount('buddy', 'qfmodel'))?.entry.id).toBe('a')
+    })
+
+    it('整账号标记与按模型标记取更晚的到期时刻（两者并存时不提前解禁）', async () => {
+      const byModel = Date.now() + 3600_000
+      const wholeAccount = Date.now() + 7200_000
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_A'), JSON.stringify({ access_token: 'a' }))
+      await pool.addAccount(makeMockAccount({
+        id: 'a', credentialRef: 'BUDDY_ACCOUNT_A',
+        modelRateLimits: { qfmodel: byModel, [ALL_MODELS_RATE_LIMIT_KEY]: wholeAccount },
+      }))
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_B'), JSON.stringify({ access_token: 'b' }))
+      await pool.addAccount(makeMockAccount({ id: 'b', credentialRef: 'BUDDY_ACCOUNT_B' }))
+      await pool.reorderAccounts('buddy', ['a', 'b'])
+
+      // 按模型那条已过期、整账号那条未过期 → 仍应跳过
+      expect((await pool.getAvailableAccount('buddy', 'qfmodel'))?.entry.id).toBe('b')
+    })
+
+    it('空 modelId（未知目标模型）仍不做限流过滤，整账号标记也不例外', async () => {
+      // ⚠️ 这条守的是**续期路径**：`refresh()` 用空 modelId 取号，而续期与
+      // 「该账号今天还能不能推理」无关。若这里因整账号标记返回 null，续期会退到
+      // 默认单凭据 ref（多账号用户不存在该 ref），于是受限账号的 token 一直不
+      // 续期，次日解禁时反而因凭据过期报 AUTH。
+      await ctx.credentials.set(credentialRef('BUDDY_ACCOUNT_A'), JSON.stringify({ access_token: 'a' }))
+      await pool.addAccount(makeMockAccount({
+        id: 'a', credentialRef: 'BUDDY_ACCOUNT_A',
+        modelRateLimits: { [ALL_MODELS_RATE_LIMIT_KEY]: Date.now() + 3600_000 },
+      }))
+      await pool.reorderAccounts('buddy', ['a'])
+      expect((await pool.getAvailableAccount('buddy', ''))?.entry.id).toBe('a')
     })
 
     it('不影响其他 provider 账号的相对位置与下标', async () => {

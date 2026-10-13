@@ -24,7 +24,7 @@ function codeOnly(source: string): string {
 const indexSource = codeOnly(read('src/index.ts'))
 const rpcSource = codeOnly(read('src/jet-hub-rpc.ts'))
 
-/** 十个 auth 文件（`buddy-auth.ts` 一份实现同时服务 buddy 与 workbuddy）。 */
+/** auth 文件清单（`buddy-auth.ts` 一份实现同时服务 buddy 与 workbuddy）。 */
 const AUTH_FILES = [
   'src/service.ts',
   'src/buddy-auth.ts',
@@ -40,6 +40,10 @@ const AUTH_FILES = [
   // 该契约正是「账号卡片刷新按钮按下去没反应」那个缺陷的回归防线，
   // 新增 provider 时必须同步加进来。
   'src/minimax-auth.ts',
+  // ⚠️ TeleAgent（星辰超级智能体）：同样**不可续期**（无 refresh 端点），
+  // 语义与 Loomy 同型 —— 只借用共享的对账回写，故下方 lead-time 用例把它
+  // 与 loomy / raccoon 一起排除，并由专门的例外用例锁死它的独有语义。
+  'src/teleagent-auth.ts',
 ]
 
 /** 取出某个方法从签名到结束花括号的整段（CRLF 安全）。 */
@@ -86,13 +90,17 @@ describe('续期调度器：启动必须先跑一轮', () => {
     expect(indexSource.slice(start, start + 1200)).toContain('.catch(')
   })
 
-  it('十个 provider 实例都在批量续期清单里（新增 provider 不得漏接）', () => {
+  it('全部 provider 实例都在批量续期清单里（新增 provider 不得漏接）', () => {
     const expected = [
       'service', 'buddy', 'workbuddy', 'lobsterai', 'qoder',
       'qoderCn', 'trae', 'cline', 'loomy', 'raccoon',
       // ⚠️ 新增 provider 必须同时加进 `src/index.ts` 的 refreshTargets
       // **与本清单** —— 只加前者不会被这条用例发现（它会静默不续期）。
       'minimax',
+      // teleagent 不可续期，但**仍要在清单里**：它的 `refreshAll` 只按
+      // `refreshable` 过滤（恒 false ⇒ 不发请求），保留这一条是为了让
+      // 「批量入口的形状」与其余 provider 一致，且漏接不会被发现。
+      'teleagent',
     ]
     for (const name of expected) {
       expect(
@@ -150,11 +158,12 @@ describe('按需续期必须回写账号池的有效期', () => {
     }
   })
 
-  it('可续期的七个 provider 的 refreshAll 走 lead-time + 对账', () => {
+  it('可续期 provider 的 refreshAll 走 lead-time + 对账', () => {
     // Loomy 不在内：它没有 refresh 端点，refreshAll 保留「只探测已过期账号」的
     // 独有语义。raccoon 也不在内：它保留自己更严的「已过期才刷」判据
     // （见 `raccoon-auth.ts` 的注释），只共用回写。
-    for (const rel of AUTH_FILES.filter((file) => !/loomy|raccoon/.test(file))) {
+    // teleagent 同样不在内：与 Loomy 同型（无 refresh 端点），见下方例外用例。
+    for (const rel of AUTH_FILES.filter((file) => !/loomy|raccoon|teleagent/.test(file))) {
       const source = codeOnly(read(rel))
       expect(
         source,
@@ -174,6 +183,26 @@ describe('按需续期必须回写账号池的有效期', () => {
     expect(source).toMatch(/syncAccountExpiry\(/)
     // 不提供 refreshableOf → 共享实现不会把池里的 `refreshable` 改掉。
     expect(source).not.toMatch(/refreshableOf/)
+  })
+
+  /**
+   * 例外说明（与 Loomy 同型）：TeleAgent 不能续期
+   * （`isTeleagentRefreshable` 恒 false，asar 全文无 refresh_token /
+   * ExchangeToken / token 刷新调用），它的 `refreshAll` 保留
+   * 「只按 refreshable 过滤 ⇒ 实际一个账号都不处理」这一独有语义
+   * （对不可能成功的操作每 30 分钟发一轮请求是纯浪费），
+   * 因此不走 lead-time 过滤，只借用共享的对账回写。
+   */
+  it('teleagent 只做有效期对账，且绝不回写 refreshable', () => {
+    const source = codeOnly(read('src/teleagent-auth.ts'))
+    expect(source).toContain('TELEAGENT_EXPIRY_ACCESSORS')
+    expect(source).toMatch(/syncAccountExpiry\(/)
+    // 不提供 refreshableOf → 共享实现不会把池里的 `refreshable` 改掉。
+    expect(source).not.toMatch(/refreshableOf/)
+    // ⚠️ 它的 refreshAll 必须**只按 refreshable 过滤**（不看 enabled）。
+    const refreshAll = source.slice(source.indexOf('async refreshAll'))
+    expect(refreshAll).toContain('if (!entry.refreshable) continue')
+    expect(refreshAll).not.toMatch(/\.enabled/)
   })
 
   it('account.refresh 的每个 provider 分支都把 pool 与 entry.id 传下去', () => {

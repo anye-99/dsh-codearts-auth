@@ -38,6 +38,7 @@ import { ClineAdapter } from './cline-adapter.js'
 import { ZcodeAdapter } from './zcode-adapter.js'
 import { TraeAdapter } from './trae-adapter.js'
 import { CodeArtsAdapter, isRateLimited, parseRateLimitError } from './llm-adapter.js'
+import { ALL_MODELS_RATE_LIMIT_KEY } from './account-pool.js'
 import { productById } from './product.js'
 import { lobsteraiProductById } from './lobsterai-product.js'
 import { qoderProductById } from './qoder-product.js'
@@ -361,6 +362,36 @@ function makeDefaultProbe(pool: ProbePool, timeoutMs: number) {
 }
 
 /**
+ * 把「整账号受限」的保留键换成一条**真实**模型 id，用于真发探测请求。
+ *
+ * ## 为什么必须有这一步（否则会造出一个清不掉的标记）
+ *
+ * Qoder 现在把日额度受限记为 {@link ALL_MODELS_RATE_LIMIT_KEY}（`'*'`，见
+ * `account-pool.ts`）。而 `retestAccount` 是**逐个标记的模型名真发一次请求**，
+ * 通过才清标记 —— 若直接把 `'*'` 当模型名发出去，上游必然回「未知模型」，
+ * 于是「重测永远说仍受限、标记永远清不掉」。
+ *
+ * ⚠️ 本仓库已两次记录过这一形态的死循环（`account-probe.ts` 顶部的分派表注释：
+ * 「点重测 → 拿到签名错误 → 标记也清不掉」），别再造第三个。
+ *
+ * 选模型的偏好：**免费额度模型优先** —— 重测是用户点一下就可能反复触发的动作，
+ * 让它去消耗付费额度不合适；`isFree` 由目录下发（见 `QoderFallbackModel.isFree`）。
+ *
+ * 其它 provider 目前**不写**该保留键，故原样返回；真遇到时保持原值会让探测
+ * 如实失败、标记被保留（保守方向：不会把仍在受限的账号误判成可用）。
+ */
+function probeModelIdFor(entry: ProviderAccountEntry, modelId: string): string {
+  if (modelId !== ALL_MODELS_RATE_LIMIT_KEY) return modelId
+  const qoder = qoderProductById(entry.provider)
+  if (qoder !== undefined) {
+    const models = qoder.fallbackModels
+    const preferred = models.find(model => model.isFree === true) ?? models[0]
+    if (preferred !== undefined) return preferred.id
+  }
+  return modelId
+}
+
+/**
  * 重测单个账号：对该账号每个带限流标记的模型发一次真实请求，
  * 正常返回的模型清除标记。
  */
@@ -386,9 +417,14 @@ export async function retestAccount(
 
   const probe = deps.probe ?? makeDefaultProbe(pool, deps.timeoutMs ?? PROBE_TIMEOUT_MS)
   for (const modelId of modelIds) {
-    const outcome = await probe(entry, modelId)
-    if (outcome.ok) result.cleared.push(modelId)
-    else result.stillLimited.push(outcome)
+    // ⚠️ 探测用**真实**模型名，但**存储键仍是 `modelId`**（可能是整账号保留键
+    // `'*'`）—— 否则清除/回写会打在错误的键上（见 `probeModelIdFor`）。
+    const outcome = await probe(entry, probeModelIdFor(entry, modelId))
+    // 归一化回存储键：`outcome.modelId` 是「发出去的那个模型」，而下游的
+    // 「清除标记」「回写新时刻」都必须针对**存储里真实存在的键**。
+    const normalized: ProbeModelResult = { ...outcome, modelId }
+    if (normalized.ok) result.cleared.push(modelId)
+    else result.stillLimited.push(normalized)
   }
 
   // 只有实测通过的模型才清除标记；仍受限/无法确认的一律保留。

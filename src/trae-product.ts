@@ -161,16 +161,37 @@ export const TRAE_OAUTH_HOST = 'https://api.trae.com.cn'
 export const TRAE_CONSOLE_HOST = 'https://www.trae.cn'
 
 /**
- * 兜底模型目录（32 个，对齐 Go 端 staticModels）。
+ * 兜底模型目录（**52 个**，2026-10-09 按远端实测补充）。
  *
- * 来源：`handler.go:247-280`，2026-08 实测快照。
- * 顺序照抄 Go 端，不重排。远端可用时完全采信远端，本表只在远端整体失败时顶替。
+ * 来源：`handler.go:247-280` 的 32 条快照 + **2026-10-09 远端实测新增 20 条**。
+ * 顺序照抄 Go 端，不重排；远端可用时完全采信远端，本表只在远端整体失败时顶替。
+ *
+ * ## 2026-10-09 更新内容
+ *
+ * 1. **新增 20 条远端实测可用、而旧表缺失的模型**（`qwen3.8-max`、`glm-5.3` 系、
+ *    `mimo-v2.6-*`、`step-5-preview`、`deepseek-v4.1-flash`、`kimi-k2.8-preview`
+ *    等）。旧表缺失它们意味着**远端失败时用户会少看到 20 个可用模型**。
+ * 2. **修正 3 条 `Doubao-Seed-*` 的 `contextWindow`**：远端实测为 **256000**
+ *    （旧表统一填 200000）。⚠️ `Doubao-Seed-2.0-Code` **保持 200000** ——
+ *    实测它在远端**未下发 `context_length`**（`ctx=-`），按「不猜」口径不动它。
+ * 3. **保留** `seed-code-pro-0430` / `glm-5-turbo` / `sagitta` / `aquila` 与 10 条
+ *    `custom_model_*`：本次采样未出现它们，但按红线**「某次没看到 ≠ 不存在」**
+ *    不删（TRAE 的返回取决于请求的 `functions` 集合，我们无法穷举所有通道）。
+ *
+ * ⚠️ **已知的通道口径问题（未在本表解决，需实测确认）**：`batch_get_detail_param`
+ * 的返回**取决于请求的 functions 集合** —— 生产口径（22 个 function）与
+ * 仅请求 3 个聊天通道的结果不同：后者才含 `solo_agent_remote` 的条目，
+ * 前者会把 `minimax-m3` / `mimo-v2.6-*` / `qwen-3.7-plus` 归到 `solo_work_lite`。
+ * 而 `src/trae.ts` 记的实测判据是「`glm-5.1` 在 `solo_work_lite` 报 4001」。
+ * 该问题属**协议层**（`trae-auth.ts` 的 functions 列表），不是模型表问题，
+ * 且改动后必须配一次真实推理验证，故本次未动。复核脚本：
+ * `scripts/probe-trae-channels.mjs`（打印两口径的通道归属差异）。
  */
 const TRAE_FALLBACK_MODELS: readonly TraeFallbackModel[] = [
   { id: 'DeepSeek-V4-Flash-Official', name: 'DeepSeek V4 Flash Official', contextWindow: 200_000 },
-  { id: 'Doubao-Seed-2.1-Pro', name: 'Doubao Seed 2.1 Pro', contextWindow: 200_000 },
+  { id: 'Doubao-Seed-2.1-Pro', name: 'Doubao Seed 2.1 Pro', contextWindow: 256_000 },
   { id: 'seed-code-pro-0430', name: 'Seed Code Pro 0430', contextWindow: 200_000 },
-  { id: 'Doubao-Seed-2.1-Turbo', name: 'Doubao Seed 2.1 Turbo', contextWindow: 200_000 },
+  { id: 'Doubao-Seed-2.1-Turbo', name: 'Doubao Seed 2.1 Turbo', contextWindow: 256_000 },
   { id: 'Doubao-Seed-2.0-Code', name: 'Doubao Seed 2.0 Code', contextWindow: 200_000 },
   { id: 'browser_use_subagent', name: 'Browser Use Subagent', contextWindow: 200_000, isHidden: true },
   { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 200_000 },
@@ -183,6 +204,29 @@ const TRAE_FALLBACK_MODELS: readonly TraeFallbackModel[] = [
   { id: 'kimi-k2.6', name: 'Kimi K2.6', contextWindow: 200_000 },
   { id: 'minimax-m3', name: 'MiniMax M3', contextWindow: 200_000 },
   { id: 'qwen-3.7-plus', name: 'Qwen 3.7 Plus', contextWindow: 200_000 },
+  // ── 2026-10-09 远端实测新增（19 条）──
+  // 窗口取自远端下发的 `context_length`（多数为 200000，Doubao 系为 256000）。
+  { id: 'qwen3.8-max', name: 'Qwen3.8 Max', contextWindow: 200_000 },
+  { id: 'qwen3.8-flash', name: 'Qwen3.8 Flash', contextWindow: 200_000 },
+  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 200_000 },
+  { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 200_000 },
+  { id: 'glm-5.3-flashx', name: 'GLM-5.3-FlashX', contextWindow: 200_000 },
+  { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000 },
+  { id: 'glm-5v-turbo', name: 'GLM-5V-Turbo', contextWindow: 200_000 },
+  { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 200_000 },
+  { id: 'DeepSeek-V4-Pro-Official', name: 'DeepSeek V4 Pro Official', contextWindow: 200_000 },
+  { id: 'kimi-k2.8-preview', name: 'Kimi K2.8 Preview', contextWindow: 200_000 },
+  { id: 'kimi-k2.5', name: 'Kimi K2.5', contextWindow: 200_000 },
+  { id: 'mimo-v2.6-flash', name: 'MiMo V2.6 Flash', contextWindow: 200_000 },
+  { id: 'mimo-v2.6-pro', name: 'MiMo V2.6 Pro', contextWindow: 200_000 },
+  { id: 'step-5-preview', name: 'Step 5 Preview', contextWindow: 200_000 },
+  { id: 'minimax-m2.7', name: 'MiniMax M2.7', contextWindow: 200_000 },
+  { id: 'qwen-3.6-plus', name: 'Qwen 3.6 Plus', contextWindow: 200_000 },
+  { id: 'qwen-3.5', name: 'Qwen 3.5', contextWindow: 200_000 },
+  { id: 'Doubao-Seed-Code', name: 'Doubao Seed Code', contextWindow: 256_000 },
+  { id: 'Doubao-Seed-Evolving', name: 'Doubao Seed Evolving', contextWindow: 256_000 },
+  { id: 'doubao_1_8', name: 'Doubao 1.8', contextWindow: 200_000 },
+  // ── 旧表保留条目（本次采样未出现，按「某次没看到 ≠ 不存在」不删）──
   { id: 'sagitta', name: 'Sagitta', contextWindow: 200_000 },
   { id: 'aquila', name: 'Aquila', contextWindow: 200_000 },
   { id: 'custom_model_gemini', name: 'Custom Gemini', contextWindow: 200_000 },

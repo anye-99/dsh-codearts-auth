@@ -269,7 +269,8 @@ class MemoryStore implements JetHubStore {
  *
  * 依据 `src/product.ts` 与各 `*-product.ts` 的 `id` 字段：
  * `codearts` / `buddy` / `workbuddy` / `lobsterai` / `qoder` / `qodercn`
- * / `trae` / `cline` / `loomy` / `raccoon` / `minimax` / `zcode`。
+ * / `trae` / `cline` / `loomy` / `raccoon` / `minimax` / `teleagent` / `zcode`
+ * / `stepcode`。
  */
 const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   ['CODEARTS', 'codearts'],
@@ -284,7 +285,17 @@ const REF_PREFIX_TO_PROVIDER: ReadonlyArray<readonly [string, string]> = [
   ['RACCOON', 'raccoon'],
   // ⚠️ 第 12 个 provider（上游 2026-10-02 合并）—— 曾漏加，见上方注释 ②。
   ['MINIMAX', 'minimax'],
+  // TeleAgent（星辰超级智能体）：**凭据型**，本插件确实写
+  // `TELEAGENT_ACCOUNT_{HEX}`（见 jet-hub-rpc 的 account.create 分支），
+  // 故**必须**进表 —— 漏加会让账号在 `state.json` 丢失后静默消失
+  // （同型缺陷已发生 2 次，第二次就是 minimax 合并时漏加）。
+  ['TELEAGENT', 'teleagent'],
   ['ZCODE', 'zcode'],
+  // Step Code（阶跃星辰）：**凭据型**，本插件确实写 `STEPCODE_ACCOUNT_{HEX}`
+  // （见 jet-hub-rpc 的 account.create 分支），故**必须**进表 ——
+  // 漏加会让账号在 `state.json` 丢失后静默消失（同型缺陷已发生 3 次：
+  // minimax 合并时、teleagent 合并时各一次）。
+  ['STEPCODE', 'stepcode'],
   // ⚠️⚠️ 第 14 个面板 **Antigravity 故意不在本表** —— 这不是第四次漏加。
   //
   // 上方三条教训都是「漏加 ⇒ 账号静默消失」；antigravity 相反：它**不该**被恢复。

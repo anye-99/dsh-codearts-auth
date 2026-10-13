@@ -8,18 +8,17 @@ import {
 } from '../../src/cline-models.js'
 import { CLINE } from '../../src/cline-product.js'
 
-/** 实测的 `recommended-models` 响应（2026-09-25，缩略但字段完整）。 */
+/** 实测的 `recommended-models` 响应（2026-10-09，缩略但字段完整）。 */
 const RECOMMENDED_FIXTURE = {
   recommended: [
     { id: 'spacexai/grok-4.7', name: 'grok-4.7', description: '', tags: ['NEW'] },
-    { id: 'anthropic/claude-opus-5', name: 'claude-opus-5', description: '', tags: ['NEW'] },
+    { id: 'anthropic/claude-opus-5.5', name: 'claude-opus-5.5', description: '', tags: ['NEW'] },
   ],
   free: [
-    { id: 'stealth/space-bunny-alpha', name: 'space-bunny-alpha', description: 'Blazing-fast inference with 1M context', tags: [] },
     { id: 'cline-free/mimo-v2.6-flash', name: 'Mimo V2.6 Flash', description: 'Mixture-of-Experts architecture with 309B total parameters', tags: [] },
-    { id: 'cline-free/deepseek-v4.1-flash', name: 'Deepseek-v4.1-Flash', description: 'Fast and efficient with 1M context window ', tags: [] },
-    { id: 'cline-free/gemini-3.8-flash', name: 'Gemini 3.8 Flash', description: "Google's most intelligent Flash model", tags: [] },
     { id: 'cline-free/muse-spark-1.3-contributor', name: 'Muse Spark 1.3 Contributor', description: 'Meta multimodal reasoning model', tags: [] },
+    { id: 'cline-free/step-5-preview', name: 'Step 5 Preview', description: "StepFun's flagship model for agentic work", tags: [] },
+    { id: 'cline-free/solar-mini4', name: 'Solar Mini 4', description: 'Compact 35-billion parameter mixture-of-experts', tags: [] },
   ],
   clinePass: [
     { id: 'cline-pass/mimo-v2.6-flash', name: 'cline-pass/mimo-v2.6-flash', description: '', tags: [] },
@@ -30,19 +29,18 @@ const RECOMMENDED_FIXTURE = {
 describe('parseClineRecommendedModels', () => {
   it('取出三个数组', () => {
     const parsed = parseClineRecommendedModels(RECOMMENDED_FIXTURE)
-    expect(parsed.free.map((e) => e.id)).toHaveLength(5)
-    expect(parsed.recommended.map((e) => e.id)).toEqual(['spacexai/grok-4.7', 'anthropic/claude-opus-5'])
+    expect(parsed.free.map((e) => e.id)).toHaveLength(4)
+    expect(parsed.recommended.map((e) => e.id)).toEqual(['spacexai/grok-4.7', 'anthropic/claude-opus-5.5'])
     expect(parsed.clinePass.map((e) => e.id)).toEqual(['cline-pass/mimo-v2.6-flash', 'cline-pass/glm-5.3'])
   })
 
-  it('free 数组正是用户截图那 5 个免费模型', () => {
+  it('free 数组正是远端当前下发的 4 个免费模型', () => {
     const parsed = parseClineRecommendedModels(RECOMMENDED_FIXTURE)
     expect(parsed.free.map((e) => e.id).sort()).toEqual([
-      'cline-free/deepseek-v4.1-flash',
-      'cline-free/gemini-3.8-flash',
       'cline-free/mimo-v2.6-flash',
       'cline-free/muse-spark-1.3-contributor',
-      'stealth/space-bunny-alpha',
+      'cline-free/solar-mini4',
+      'cline-free/step-5-preview',
     ].sort())
   })
 
@@ -82,11 +80,11 @@ describe('parseClineRemoteModelIds', () => {
 })
 
 describe('免费判定（集合动态判定，不硬编码模型名）', () => {
-  const remoteFree = new Set(['cline-free/deepseek-v4.1-flash', 'stealth/space-bunny-alpha'])
+  const remoteFree = new Set(['cline-free/mimo-v2.6-flash', 'cline-free/step-5-preview'])
 
   it('远端 free 集合命中即免费', () => {
-    expect(isClineFreeModel('cline-free/deepseek-v4.1-flash', remoteFree)).toBe(true)
-    expect(isClineFreeModel('stealth/space-bunny-alpha', remoteFree)).toBe(true)
+    expect(isClineFreeModel('cline-free/mimo-v2.6-flash', remoteFree)).toBe(true)
+    expect(isClineFreeModel('cline-free/step-5-preview', remoteFree)).toBe(true)
   })
 
   it('`:free` 后缀命中即免费（内嵌目录里的 21 个条目）', () => {
@@ -102,25 +100,25 @@ describe('免费判定（集合动态判定，不硬编码模型名）', () => {
   })
 
   it('兜底表的 isFree 参与判定', () => {
-    expect(isClineFreeModel('cline-free/gemini-3.8-flash')).toBe(true)
+    expect(isClineFreeModel('cline-free/step-5-preview')).toBe(true)
     expect(isClineFreeModel('deepseek/deepseek-v4.1-flash')).toBe(false)
   })
 
   /**
    * ⚠️ **核心不变式**：免费与付费是**两个不同的 id**。
-   * `cline-free/deepseek-v4.1-flash` 免费，而
-   * `deepseek/deepseek-v4.1-flash` 按量计费 —— 绝不可因名字相似就判免费
+   * `cline-free/mimo-v2.6-flash` 免费，而
+   * `xiaomi/mimo-v2.6-flash` 按量计费 —— 绝不可因名字相似就判免费
    * （那会让用户按免费预期使用却被计费）。
    */
   it('同名但不同命名空间的付费模型**不**被判为免费', () => {
-    expect(isClineFreeModel('cline-free/deepseek-v4.1-flash', remoteFree)).toBe(true)
-    expect(isClineFreeModel('deepseek/deepseek-v4.1-flash', remoteFree)).toBe(false)
+    expect(isClineFreeModel('cline-free/mimo-v2.6-flash', remoteFree)).toBe(true)
+    expect(isClineFreeModel('xiaomi/mimo-v2.6-flash', remoteFree)).toBe(false)
     // 即便不带远端集合，付费 id 也不得命中任何分支
-    expect(isClineFreeModel('deepseek/deepseek-v4.1-flash')).toBe(false)
+    expect(isClineFreeModel('xiaomi/mimo-v2.6-flash')).toBe(false)
   })
 
   it('未登记的付费模型默认不免费', () => {
-    for (const id of ['openai/gpt-6-luna', 'anthropic/claude-opus-5', 'fireworks/ember-1']) {
+    for (const id of ['openai/gpt-6-astra', 'anthropic/claude-opus-5.5', 'fireworks/ember-1']) {
       expect(isClineFreeModel(id), id).toBe(false)
     }
   })
@@ -152,7 +150,7 @@ describe('mergeClineModels', () => {
     remoteIds: [
       'fireworks/ember-1',
       'deepseek/deepseek-v4.1-flash',
-      'cline-free/deepseek-v4.1-flash',
+      'cline-free/mimo-v2.6-flash',
       'z-ai/glm-5.2:free',
     ],
     entries: [...RECOMMENDED_FIXTURE.free, ...RECOMMENDED_FIXTURE.recommended, ...RECOMMENDED_FIXTURE.clinePass],
@@ -160,9 +158,9 @@ describe('mergeClineModels', () => {
 
   it('免费模型排在最前（用户最关心）', () => {
     const models = mergeClineModels(CLINE, remote)
-    const firstFive = models.slice(0, 5).map((m) => m.id)
-    expect(firstFive.sort()).toEqual([...remote.freeIds].sort())
-    expect(models.slice(0, 5).every((m) => m.isFree)).toBe(true)
+    const firstFree = models.slice(0, remote.freeIds.length).map((m) => m.id)
+    expect(firstFree.sort()).toEqual([...remote.freeIds].sort())
+    expect(models.slice(0, remote.freeIds.length).every((m) => m.isFree)).toBe(true)
   })
 
   it('远端 `/models` 里的付费模型也进列表（用户要求「全部列出」）', () => {
@@ -182,10 +180,19 @@ describe('mergeClineModels', () => {
 
   it('兜底表里的元数据被保留（上下文窗口 / 输出上限 / 图片能力）', () => {
     const models = mergeClineModels(CLINE, remote)
-    const entry = models.find((m) => m.id === 'cline-free/deepseek-v4.1-flash')
+    const entry = models.find((m) => m.id === 'cline-free/mimo-v2.6-flash')
     expect(entry?.contextWindow).toBe(1_048_576)
     expect(entry?.maxTokens).toBe(131_072)
     expect(entry?.supportsImage).toBe(true)
+  })
+
+  it('纯文本免费条目不被误标为支持图片（solar-mini4）', () => {
+    // models.dev 的 `upstage/solar-mini4` 明确是 `modalities.input = ["text"]`。
+    const models = mergeClineModels(CLINE, remote)
+    const entry = models.find((m) => m.id === 'cline-free/solar-mini4')
+    expect(entry?.supportsImage).toBe(false)
+    expect(entry?.contextWindow).toBe(524_288)
+    expect(entry?.maxTokens).toBe(131_072)
   })
 
   it('远端只有 id 时派生可读展示名（不显示裸 id）', () => {
@@ -195,9 +202,8 @@ describe('mergeClineModels', () => {
     expect(entry?.name).not.toBe('openai/gpt-6-luna')
   })
 
-  it('远端 `free` 数组里的模型即使不在兜底表也被标免费（如 gemini-3.8-flash 的远端来源）', () => {
-    // 兜底表已补上 gemini-3.8-flash，但**远端才是权威** ——
-    // 这里用一个兜底表完全没有的新免费 id 验证集合判定生效。
+  it('远端 `free` 数组里的模型即使不在兜底表也被标免费', () => {
+    // **远端才是权威** —— 用一个兜底表完全没有的新免费 id 验证集合判定生效。
     const models = mergeClineModels(CLINE, {
       freeIds: ['brand-new/free-model-x'],
       remoteIds: [],
@@ -211,7 +217,7 @@ describe('mergeClineModels', () => {
   it('两个来源都为空时仍返回兜底表（离线可用）', () => {
     const models = mergeClineModels(CLINE, { freeIds: [], remoteIds: [], entries: [] })
     expect(models.length).toBe(CLINE.fallbackModels.length)
-    expect(models.filter((m) => m.isFree)).toHaveLength(5)
+    expect(models.filter((m) => m.isFree)).toHaveLength(4)
   })
 
   it('`clinePass` 里的订阅制模型**不**被判为免费', () => {

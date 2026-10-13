@@ -82,9 +82,43 @@ export interface LoomyProduct {
  * 本表**先采信远端**；若实测长上下文被拒，改为 262144（见设计文档 §11）。
  */
 /**
- * 实测的思考档位（8 个 chat 模型**完全一致**，2026-09-28 用真实凭据采集）。
+ * 兜底模型目录（**10 个 chat 模型**，2026-10-09 按远端实测重采）。
  *
- * ⚠️ 抽成常量而不是逐条写 8 遍：远端对全部 chat 模型下发同一份档位，
+ * 来源：2026-10-09 用真实凭据实测 `GET /api/v1/models`（远端共 13 条，
+ * 按 `type === 'chat'` 过滤得 **10 条**；其余 3 条是 `type === 'image'` 的生图模型）。
+ * 顺序**照抄远端返回顺序**，不重排 —— 重排会让「与远端对比」这类排查失去可比性。
+ *
+ * ## 2026-10-09 更新内容
+ *
+ * - **新增 `DeepSeek-V4.1-Flash`（x2.0）**：远端 index 0 且 `is_default_model: true`，
+ *   是默认模型，旧表完全没有它；
+ * - **`spark-x` 展示名改为 `Spark X2.5（限时免费）`**：远端把倍率位改成了
+ *   **状态文案**（`name = "Spark X2.5（限时免费）"`），不再下发 `x0.1`。
+ *   ⚠️ 这是**上游事实**，不是我们丢了倍率 —— 「倍率必须显示」这条口径在此处
+ *   无法由我们满足（上游没给）。⚠️ 该值是**易腐的**：限免结束上游会改回
+ *   `（x0.1）`，届时需重采。
+ * - **0 条下线**：旧表 8 条 id 全部仍在远端。
+ *
+ * ⚠️ `name` 已按 `loomyDisplayName` 规范化（远端原值是三种括号风格混用）。
+ * ⚠️ `contextWindow` 用远端 `context_length`。`spark-x` 是**已知分歧**：
+ * 远端声明 1048576，而 Loomy 客户端用本地表
+ * `MODEL_CONTEXT_OVERRIDES = { 'spark-x': 262144 }` 强制降到 262144。
+ * 本表**先采信远端**；若实测长上下文被拒，改为 262144（见设计文档 §11）。
+ *
+ * ⚠️ **不含 `auto`（`自动 · 均衡`）**：它是远端下发的**聚合/自动选模入口**，
+ * 不是真实模型。判据三条：① name 字面就是「自动 · 均衡」；
+ * ② 它**缺全部能力元数据**（无 `context_length` / `capabilities` /
+ * `reasoning_efforts` / 倍率），正是「聚合入口」而非真实模型的形态；
+ * ③ 与 `src/buddy.ts` 的 `isAutoSelectAlias`（过滤 `auto`/`default`）同型。
+ * ⚠️ 但 `parseLoomyRemoteModels` **当前仍会把远端下发的 `auto` 放进来**
+ * （它只按 `type === 'chat'` 过滤），故「远端可用」与「远端失败」两条路径
+ * 的条目数暂不一致（10 vs 9）—— 这属于解析层的取舍，本次只更新模型数据，
+ * 未改过滤逻辑。
+ */
+/**
+ * 实测的思考档位（9 个带档位的 chat 模型**完全一致**，2026-10-09 用真实凭据采集）。
+ *
+ * ⚠️ 抽成常量而不是逐条写 9 遍：远端对全部 chat 模型下发同一份档位，
  * 逐条重复只会让将来上游变更时漏改其中几条。
  * ⚠️ 远端可用时**优先用远端的 `reasoning_efforts`**，本常量只在远端整体失败时
  * 顶替（与 `contextWindow` 同策略）。
@@ -102,13 +136,15 @@ const LOOMY_EFFORTS: readonly string[] = ['none', 'low', 'medium', 'high', 'xhig
 const LOOMY_DEFAULT_EFFORT = 'high'
 
 const LOOMY_FALLBACK_MODELS: readonly LoomyFallbackModel[] = [
+  { id: 'DeepSeek-V4.1-Flash', name: 'DeepSeek V4.1 Flash · x2.0', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'deepseek-v4-flash-0731', name: 'DeepSeek V4 Flash 0731 · x3.0', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'MiniMax-M3', name: 'MiniMax M3 · x4.0', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'Kimi-k2.6', name: 'Kimi k2.6 · x6.5', contextWindow: 262_144, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'qwen-3.8-max', name: 'Qwen 3.8 Max · x12.0', contextWindow: 1_000_000, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'GLM-5.3-Flash', name: 'GLM 5.3 Flash · x0.8', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'qwen3.8-flash', name: 'qwen 3.8 flash · x0.8', contextWindow: 1_000_000, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
-  { id: 'spark-x', name: 'Spark X2.5 · x0.1', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
+  // ⚠️ 远端倍率位已被状态文案「限时免费」取代（见上方说明），此处与远端保持一致。
+  { id: 'spark-x', name: 'Spark X2.5（限时免费）', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
   { id: 'mimo-v2.5', name: 'MiMo V2.5 · x3.3', contextWindow: 1_048_576, efforts: [...LOOMY_EFFORTS], defaultEffort: LOOMY_DEFAULT_EFFORT },
 ]
 

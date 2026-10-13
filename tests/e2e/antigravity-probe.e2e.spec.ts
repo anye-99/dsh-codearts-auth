@@ -21,7 +21,7 @@
  * 同一份代码路径 —— 这是刻意的：探针验证的就是"装配层在本机上的真实形态"。
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { AntigravityService } from '../../src/agy-service.js'
 
@@ -42,7 +42,10 @@ function makeCtx(): Context {
 describeGate('Antigravity 装配探针（只读，不发推理请求）', () => {
   const service = new AntigravityService(makeCtx())
 
-  it.afterAll(() => {
+  // ⚠️ 必须是**顶层** `afterAll`（`vitest` 的导出），不是 `it.afterAll` ——
+  // 后者不存在，会让整个文件在**收集阶段**就抛 `TypeError: it.afterAll is not a
+  // function`，于是 `no tests` 全部跳过（探针静默失效，看起来像「没配闸门」）。
+  afterAll(() => {
     service.dispose()
   })
 

@@ -27,7 +27,7 @@ import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmModelInfo, LlmProviderInfo, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { randomUUID } from 'node:crypto'
-import { AccountPool, providerCatalogVisible } from './account-pool.js'
+import { AccountPool, ALL_MODELS_RATE_LIMIT_KEY, providerCatalogVisible } from './account-pool.js'
 import { isQoderExpired, type QoderCredential } from './qoder.js'
 import { QoderEncryptedInfer, type QoderInferMessage, type QoderInferRequest, type QoderInferTool, type QoderInferToolCall } from './qoder-wasm.js'
 import { unwrapQoderEnvelopeStream } from './qoder-envelope.js'
@@ -898,13 +898,18 @@ export class QoderAdapter extends LlmAdapter {
   }
 
   /**
-   * 额度受限时：**标记当前账号该模型受限到 UTC+8 当日 24:00，然后切下一个账号**。
+   * 额度受限时：**标记当前账号的全部模型受限到 UTC+8 当日 24:00，然后切下一个账号**。
    *
    * ## 用户要求（2026-09-27）
    *
    * > qoder 碰到当日额度受限应该像 workbuddy/codebuddy 一样，设置一个模型受限时间
    * > （他们是返回错误中带时间，qoder 和 qodercn 需要自己设置当日 24:00 受限）
    * > 然后切换账号池中的下一个可用模型
+   *
+   * ⚠️ 用户原话里的「模型受限时间」是**那时的措辞**；2026-10-10 实测证明
+   * Qoder 的日额度是**账号级**的（换模型照样被拒），故标记范围已从
+   * 「该模型」扩为「该账号全部模型」—— 详见下方实现处与
+   * `account-pool.ts` 的 `ALL_MODELS_RATE_LIMIT_KEY`。
    *
    * ## ⚠️ 与 buddy/CodeArts 的**关键差异**
    *
@@ -925,10 +930,29 @@ export class QoderAdapter extends LlmAdapter {
     const pool = this.options.accountPool
     if (pool === undefined) return undefined
 
-    // ① 记录「本账号 + 本模型」受限到 UTC+8 当日 24:00。
+    // ① 记录「本账号**全部模型**」受限到 UTC+8 当日 24:00。
     //
-    // ⚠️ 只标记**该模型**（不标记账号全部模型）：额度是「模型 + 账号」维度的，
-    // 该账号在别的模型上仍可能可用（`modelRateLimits` 的既有语义即如此）。
+    // ⚠️⚠️ **必须标整账号，不能只标本模型**（真实缺陷，用户报障 2026-10-10）。
+    //
+    // 早期实现标的是 `options.model`，依据是一条**未经实测的推断**：
+    // 「额度是『模型 + 账号』维度的」。2026-10-10 实测**推翻了它** ——
+    // 同一账号换三个不同模型全部在数百毫秒内被同一句文案拒掉：
+    //
+    //   | 模型 | 结果 |
+    //   |---|---|
+    //   | `qfmodel` | 11.6s 后被拒 |
+    //   | `dfmodel` | **0.4 秒后**同账号同样被拒 |
+    //   | `qmodel_38max` | 同账号同样被拒（流内 `{"code":"110"}`） |
+    //
+    // 而该账号 `/sash/api/v2/me/usage` 显示 `addOnQuota.remaining = 100`
+    // （积分并未耗尽）—— 说明这个「daily count」是**按账号**结算的
+    // 日请求次数，与选哪个模型无关。
+    //
+    // 只标单模型的后果（正是用户看到的）：「继续」后手动换模型，
+    // 池认为该账号在新模型上仍可用 → 又被选中 → 立刻撞同一堵墙。
+    //
+    // 故改用保留键 {@link ALL_MODELS_RATE_LIMIT_KEY}；`getAvailableAccount`
+    // 经 `rateLimitedUntil` 同时识别该键（见 `account-pool.ts`）。
     //
     // ⚠️ 用的是调用方传入的 `activeAccountId`，**不是** `this.options.currentAccountId()`：
     // 后者是「会话启动时/池当前的默认账号」，一旦我们切换到下一个账号，它**不会
@@ -936,15 +960,19 @@ export class QoderAdapter extends LlmAdapter {
     // 下次取号又把 B 选中，导致在 A/B 之间**反复空转**（写单测时实测到了：
     // 标记记录是 `['acct-A','acct-A']` 而非 `['acct-A','acct-B']`）。
     if (activeAccountId !== undefined && activeAccountId.length > 0) {
-      await pool.updateModelRateLimit(activeAccountId, options.model, nextUtc8DayStartMs())
+      await pool.updateModelRateLimit(activeAccountId, ALL_MODELS_RATE_LIMIT_KEY, nextUtc8DayStartMs())
       tried.add(activeAccountId)
     }
 
     // ② 取下一个可用账号。
     //
-    // ⚠️ 必须传 `tried`：池按「限流重置时间最早到期」排序，**刚失败的账号可能
-    // 仍排第一**，不排除就会拿回同一个、命中下面的检查而立即放弃切换。
-    // （与 buddy 的注释同因，见 `buddy-adapter.ts` 的 1200 行附近。）
+    // ⚠️ 仍传 `options.model`：这里要选的是「能服务**这个**模型的账号」，
+    // 别的 provider 按模型记的限流标记也应被排除。刚写下的整账号标记会由
+    // `rateLimitedUntil` 的保留键判据另行命中，无需在此特殊处理。
+    //
+    // ⚠️ 必须传 `tried`：池按用户手动顺序返回候选，**刚失败的账号可能仍排
+    // 第一**，不排除就会拿回同一个、命中下面的检查而立即放弃切换。
+    // （与 `buddy-adapter.ts` 的同款注释同因。）
     const next = await pool.getAvailableAccount(this.product.id, options.model, tried)
     if (next === null || tried.has(next.entry.id)) return undefined
     tried.add(next.entry.id)

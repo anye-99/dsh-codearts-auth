@@ -990,6 +990,12 @@ export class ZcodeAdapter extends LlmAdapter {
    *
    * ⚠ 只标记**该账号 + 该模型**（`updateModelRateLimit` 的既有语义）：
    * 额度是「账号 + 模型」维度的，同一账号在别的模型上仍可能可用。
+   *
+   * ⚠ **本条的「按模型」与 qoder 的「按账号」不冲突，别为了统一而改动**：
+   * qoder 已改为标整账号，因为它有**跨模型实测证据**（同一账号换三个模型全被
+   * code 110 拒，见 `qoder-adapter.ts`）。ZCode 目前**只有同模型下的证据**，
+   * 没有跨模型证据 —— 无证据就扩大到整账号会误伤「该账号在本模型受限、
+   * 别的模型仍可用」的场景。若哪天对 ZCode 取得跨模型证据，再照 qoder 改。
    */
   private async switchAccountOnQuota(
     options: GenerateOptions,

@@ -7,7 +7,7 @@
  * `free` 数组），随时可能被撤销或改为计费。若探针无条件遍历「远端说是免费」
  * 的那批模型，一旦某个模型转为计费，一次 e2e 就会**按付费价刷掉真实 token**。
  *
- * 故本探针的默认行为是：**只请求 `cline-free/deepseek-v4.1-flash`** ——
+ * 故本探针的默认行为是：**只请求 `cline-free/mimo-v2.6-flash`** ——
  * 用户明确指定为日常验证用的那一个。其余免费模型必须显式 opt-in。
  *
  * ## 三重闸门
@@ -44,8 +44,14 @@ const suite = RUN ? describe : describe.skip
  *
  * 选它的理由：用户明确要求 e2e 只用这一个（避免其余免费模型将来转为计费后
  * 被自动刷 token）。
+ *
+ * ⚠️ **2026-10-09 换过一次**：原值是 `cline-free/deepseek-v4.1-flash`，
+ * 而该 id 已实测**下线**（`POST /chat/completions` 回
+ * `404 {"error":"model not found"}`，见 `scripts/probe-cline-availability.mjs`）。
+ * 继续用它会让本探针**必然失败**（且失败原因看起来像链路坏了）。
+ * 现取远端 `free` 数组里的 `mimo-v2.6-flash`（同样是免费额度模型）。
  */
-const DEFAULT_MODEL = 'cline-free/deepseek-v4.1-flash'
+const DEFAULT_MODEL = 'cline-free/mimo-v2.6-flash'
 
 /** 是否遍历远端下发的**全部**免费模型（默认关）。 */
 const ALL_FREE = process.env.DSH_CLINE_CHAT_E2E_ALL_FREE === '1'
@@ -53,12 +59,16 @@ const ALL_FREE = process.env.DSH_CLINE_CHAT_E2E_ALL_FREE === '1'
 /** 显式指定的模型（优先于默认值）。 */
 const EXPLICIT_MODEL = process.env.DSH_CLINE_MODEL
 
-/** 远端 free 集合里的其余 4 个（截图那批里除默认模型外的）。 */
+/**
+ * 远端 free 集合里的其余 3 个（默认模型之外的全部）。
+ *
+ * ⚠️ 旧清单里的 `stealth/space-bunny-alpha` / `cline-free/deepseek-v4.1-flash` /
+ * `cline-free/gemini-3.8-flash` 已实测下线，故从本清单移除。
+ */
 const OTHER_FREE = [
-  'stealth/space-bunny-alpha',
-  'cline-free/mimo-v2.6-flash',
-  'cline-free/gemini-3.8-flash',
   'cline-free/muse-spark-1.3-contributor',
+  'cline-free/step-5-preview',
+  'cline-free/solar-mini4',
 ]
 
 /**
@@ -154,7 +164,7 @@ async function streamOnce(
   return { status: response.status, text, reasoning, frames, raw }
 }
 
-suite('Cline 推理探针（默认只请求 cline-free/deepseek-v4.1-flash）', () => {
+suite('Cline 推理探针（默认只请求 cline-free/mimo-v2.6-flash）', () => {
   const entries = readClineCredentialsFromDshStore()
 
   it('至少有一个已登录的 Cline 账号', () => {
@@ -164,7 +174,7 @@ suite('Cline 推理探针（默认只请求 cline-free/deepseek-v4.1-flash）', 
     ).toBeGreaterThan(0)
   })
 
-  it('免费模型推理链路返回 SSE（默认 deepseek-v4.1-flash）', async () => {
+  it('免费模型推理链路返回 SSE（默认 mimo-v2.6-flash）', async () => {
     const { credential } = entries[0]!
     const model = EXPLICIT_MODEL ?? DEFAULT_MODEL
 
@@ -236,12 +246,12 @@ suite('Cline 推理探针（默认只请求 cline-free/deepseek-v4.1-flash）', 
     expect(() => assertFreeModel(paid, paid.id, new Set())).toThrow(/不是免费模型/)
     expect(() => assertFreeModel(undefined, 'ghost/model', new Set())).toThrow(/不在目录中/)
     // 免费模型通过
-    const free: ClineModel = { id: 'cline-free/deepseek-v4.1-flash', name: 'x', isFree: true }
+    const free: ClineModel = { id: 'cline-free/mimo-v2.6-flash', name: 'x', isFree: true }
     expect(() => assertFreeModel(free, free.id, new Set([free.id]))).not.toThrow()
   })
 
   it('默认模型是免费的那一个（防止有人误改默认值）', () => {
-    expect(DEFAULT_MODEL).toBe('cline-free/deepseek-v4.1-flash')
+    expect(DEFAULT_MODEL).toBe('cline-free/mimo-v2.6-flash')
     expect(DEFAULT_MODEL.startsWith('cline-free/')).toBe(true)
   })
 })

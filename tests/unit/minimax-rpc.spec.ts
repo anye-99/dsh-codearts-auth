@@ -57,8 +57,9 @@ describe('接线点完整性（源码断言）', () => {
     //    它排在 zcode 之后、modelAdapters 之前。同日移除 vibex 面板，故 zcode 直接
     //    接 agyService。
     //    这条正则的本意就是「数占位」：新增面板时必须同步在这里补一个名字，
-    //    否则 modelAdapters 会错位落到最后一个 auth 形参上（本仓库已踩七次）。）
-    expect(indexSource).toMatch(/loomy, raccoon, minimax, zcode, agyService, modelAdapters/)
+    //    否则 modelAdapters 会错位落到最后一个 auth 形参上（本仓库已踩七次）。
+    //    ⚠️ 2026-10-09 接入 stepcode（插在 zcode 与 agyService 之间）→ 已补。）
+    expect(indexSource).toMatch(/loomy, raccoon, minimax, teleagent, zcode, stepcode, agyService, modelAdapters/)
   })
 
   it('⚠️ index.ts 的 refresh 回调必须用两层结构（available.entry.*）', () => {
@@ -88,7 +89,13 @@ describe('接线点完整性（源码断言）', () => {
     // 真实缺陷形态：CN 那次「中国版账号的刷新去续了国际版凭据」。
     // 断言 minimax 的 refresh 分支用的是 minimax 实例。
     const code = stripComments(rpcSource)
-    const idx = code.indexOf('case MINIMAX.id:')
+    // ⚠️ 锚点必须限定在 `account.refresh` 之内（真实事故，2026-10-13）：
+    // `case MINIMAX.id:` 在 `claimAllForProvider()`（`credits.claimAll` 的实现，
+    // 每日自动签到与 RPC 共用）里也有一处，从全文开头找会命中那一个，
+    // 断言便跑去看领取逻辑、以「找不到 refreshAccountCredential」失败。
+    const refreshAt = code.indexOf("case 'account.refresh'")
+    expect(refreshAt).toBeGreaterThan(-1)
+    const idx = code.indexOf('case MINIMAX.id:', refreshAt)
     expect(idx).toBeGreaterThan(-1)
     const caseBody = code.slice(idx, idx + 400)
     expect(caseBody).toContain('minimax.refreshAccountCredential')

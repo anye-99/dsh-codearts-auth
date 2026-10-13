@@ -130,31 +130,61 @@ export interface ClineProduct {
 }
 
 /**
- * 兜底模型目录（内嵌 `BUILTIN_MODEL_CATALOG.cline` 段 + 远端 `free` 数组实测）。
+ * 兜底模型目录（远端 `free` 数组实测）。
  *
- * ⚠️ **免费模型是独立 id**：`cline-free/deepseek-v4.1-flash`（免费）与
- * `deepseek/deepseek-v4.1-flash`（按量计费）是**两个不同条目**。
- * 绝不可用「名字包含 deepseek」之类的模糊匹配判免费。
+ * ⚠️ **免费模型是独立 id**：`cline-free/mimo-v2.6-flash`（免费）与
+ * `xiaomi/mimo-v2.6-flash`（按量计费）是**两个不同条目**。
+ * 绝不可用「名字包含 mimo」之类的模糊匹配判免费。
  *
- * ⚠️ 远端 `/api/v1/models` 的 460 个 id 里**根本没有 `cline-free/*`**
- * （实测 `Select-String 'cline-free/'` 零命中）—— 免费模型**只**由
+ * ⚠️ 远端 `/api/v1/models` 的 469 个 id 里**根本没有 `cline-free/*`**
+ * （实测 `cline-free/` 前缀零命中）—— 免费模型**只**由
  * `recommended-models` 下发。这是「只调 `/models` 会看不到任何免费模型」的原因。
  *
- * ⚠️ 内嵌目录**缺 `cline-free/gemini-3.8-flash`**（远端 `free` 有），
- * 故这里把它补进兜底表；否则离线时用户看不到截图里的那个模型。
+ * ## 2026-10-09 全表更新（免费集合已实质变化）
+ *
+ * 远端 `recommended-models` 的 `free` 数组**换了三个成员**（匿名与已登录
+ * 两种认证态下完全一致，见 `scripts/probe-cline-free-auth.mjs`）：
+ *
+ * | id | 旧表 | 远端 `free` | 真实调用 |
+ * |---|---|---|---|
+ * | `cline-free/mimo-v2.6-flash` | 有 | **有** | 保留 |
+ * | `cline-free/muse-spark-1.3-contributor` | 有 | **有** | 保留 |
+ * | `cline-free/step-5-preview` | 无 | **有** | **新增** |
+ * | `cline-free/solar-mini4` | 无 | **有** | **新增** |
+ * | `stealth/space-bunny-alpha` | 有 | 无 | **404（上游无端点）** |
+ * | `cline-free/deepseek-v4.1-flash` | 有 | 无 | **404 model not found** |
+ * | `cline-free/gemini-3.8-flash` | 有 | 无 | **404 model not found** |
+ *
+ * ⚠️ **三个旧条目的删除是实测结论，不是「没在清单里就删」**：它们既不在
+ * `free` 数组、也不在 `/api/v1/models` 的 469 条里，仅凭这点只能说明
+ * 「未被列出」。故逐个发了一次最小请求（`max_tokens: 1`）验证 ——
+ * 两个回 `404 {"error":"model not found"}`，`stealth/space-bunny-alpha`
+ * 回 `500`，其上游 OpenRouter 报文是
+ * `No endpoints found for stealth/space-bunny-alpha`（**上游已无该模型的任何端点**）。
+ * 对照组 `cline-free/mimo-v2.6-flash` 同参数回 `500 empty response content`
+ * （模型存在，只是 `max_tokens: 1` 产不出内容），证明该判据能区分两者。
+ * 复核脚本：`scripts/probe-cline-availability.mjs`。
+ *
+ * ⚠️ **保留它们会有实际危害**：`isClineFreeModel` 有
+ * `id.startsWith('cline-free/')` 的命名约定兜底，故即使远端不再下发，
+ * 这些 id 仍会被播报为「免费」并出现在选择器里 —— 用户选中后必然 404。
+ *
+ * ⚠️ 新增两条的 `contextWindow` / `maxTokens` 取自 models.dev 的**官方 provider
+ * 块**（`stepfun` / `upstage`），非估算：
+ * - `step-5-preview`：`limit = {context: 1000000, output: 65536}`、
+ *   `modalities.input = ["text","image","video"]` → 支持图片；
+ * - `solar-mini4`：`limit = {context: 524288, output: 131072}`、
+ *   `modalities.input = ["text"]` → **不支持**图片。
+ *
+ * ⚠️ 顺带记录一处**未修**的缺陷：该响应现在还有第四个数组 `clineCloud`
+ * （`cline-cloud/deepseek-v4.1-flash`），而 `parseClineRecommendedModels`
+ * 只解析 `free` / `recommended` / `clinePass` ⇒ 该条目整个丢失。本次只做
+ * 「模型列表数据更新」，未改解析器；且实测该 id 当前回
+ * `403 {"message":"Error 403: This request is not supported."}`（不可用），
+ * 故暂不收录。详见 `src/cline-models.ts` 的对应说明。
  */
 const CLINE_FALLBACK_MODELS: readonly ClineFallbackModel[] = [
-  // ── 免费模型（远端 `free` 数组实测 2026-09-25，共 5 个）──
-  // 这 5 个正是用户截图里的清单。
-  {
-    id: 'stealth/space-bunny-alpha',
-    name: 'Space Bunny Alpha',
-    contextWindow: 1_000_000,
-    maxTokens: 524_288,
-    supportsImage: true,
-    isFree: true,
-    description: 'Blazing-fast inference with 1M context',
-  },
+  // ── 免费模型（远端 `free` 数组实测 2026-10-09，共 4 个）──
   {
     id: 'cline-free/mimo-v2.6-flash',
     name: 'MiMo-V2.6-Flash',
@@ -165,41 +195,39 @@ const CLINE_FALLBACK_MODELS: readonly ClineFallbackModel[] = [
     description: 'Mixture-of-Experts architecture with 309B total parameters',
   },
   {
-    id: 'cline-free/deepseek-v4.1-flash',
-    name: 'DeepSeek V4.1 Flash',
-    contextWindow: 1_048_576,
-    maxTokens: 131_072,
-    supportsImage: true,
-    isFree: true,
-    description: 'Fast and efficient with 1M context window',
-  },
-  {
-    // ⚠️ 内嵌目录里**没有**这一条（只有远端 `free` 数组下发），元数据取自
-    // 远端 description + 同名 `google/gemini-3.8-flash` 的目录实测值。
-    //
-    // ⚠️ **输出上限是 65536，不要照抄其它免费模型的 131072**（真实缺陷，
-    // 用户报障 2026-09-25）：给该模型发 `max_tokens=131072` 会被上游的
-    // vertex provider 以 400 拒绝 —— "has a maxOutputTokens value of 131072
-    // but the supported range is from 1 (inclusive) to 65537 (exclusive)"，
-    // 即上限就是 65536，与内嵌目录一致。
-    id: 'cline-free/gemini-3.8-flash',
-    name: 'Gemini 3.8 Flash',
-    contextWindow: 1_048_576,
-    maxTokens: 65_536,
-    supportsImage: true,
-    isFree: true,
-    description: "Google's most intelligent Flash model",
-  },
-  {
     id: 'cline-free/muse-spark-1.3-contributor',
     name: 'Muse Spark 1.3 Contributor',
     contextWindow: 1_048_576,
+    // ⚠️ 943718 取自 models.dev 的 `nano-gpt`/`bothub`/`kilo`/`openrouter`
+    // 四处一致的实测值（`cline-pass` 块另报 131072，两说并存）。
+    // 保留既有取值不动 —— 它不是本次更新的目标，且改动会影响真实请求的
+    // `max_tokens`，需单独实测确认后才可调整。
     maxTokens: 943_718,
     supportsImage: true,
     isFree: true,
     description:
       'Meta\u2019s multimodal reasoning model for experimentation, learning, '
       + 'and early-stage agentic, multi-agent, and coding workflows.',
+  },
+  {
+    id: 'cline-free/step-5-preview',
+    name: 'Step 5 Preview',
+    contextWindow: 1_000_000,
+    maxTokens: 65_536,
+    supportsImage: true,
+    isFree: true,
+    description: "StepFun's flagship model for agentic work, built on a sparse Mixture-of-Experts",
+  },
+  {
+    // ⚠️ 纯文本模型（models.dev `modalities.input = ["text"]`）——
+    // 不要照抄其它免费条目的 `supportsImage: true`。
+    id: 'cline-free/solar-mini4',
+    name: 'Solar Mini 4',
+    contextWindow: 524_288,
+    maxTokens: 131_072,
+    supportsImage: false,
+    isFree: true,
+    description: 'Compact 35-billion parameter mixture-of-experts',
   },
 ]
 
