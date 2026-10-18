@@ -15,7 +15,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef, type CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { AccountPool } from './account-pool.js'
+import { AccountPool, PROVIDER_CLOSED_KEY } from './account-pool.js'
 // 每日自动签到：**装配层**（持久化状态 + 逐渠道执行 + 日志出口）。
 // ⚠️ 只取它的类型与 RPC 动词用到的快照：真正的执行发生在 `src/index.ts`
 // 的启动路径上，本文件**不**负责触发（见 `checkin.auto.*` 两个 case 的注释）。
@@ -3905,12 +3905,15 @@ function registerJetHubEndpoints(
           // 全量目录里若仍有黑名单命中却缺失者，一并补上（保底，正常不会发生）。
           const known = new Set(catalog.map((model) => model.id))
           for (const id of Object.keys(disabledMap)) {
+            // 跳过「整供应商关闭」保留键：它不是模型。
+            if (id === PROVIDER_CLOSED_KEY) continue
             if (disabledMap[id] === true && !known.has(id)) catalog.push({ id, name: id })
           }
         } else {
           const listedIds = new Set(models.map((model) => model.id))
           const filteredOut = Object.keys(disabledMap)
-            .filter((id) => disabledMap[id] === true && !listedIds.has(id))
+            .filter((id) => id !== PROVIDER_CLOSED_KEY
+              && disabledMap[id] === true && !listedIds.has(id))
           catalog = [
             ...models.map((model) => ({ id: model.id, name: model.name })),
             // 这些模型已被适配器过滤掉，拿不到原始 name，回退为 id。
@@ -4124,7 +4127,8 @@ function registerJetHubEndpoints(
             // 以禁用供应商开关」的做法随自实现移除（开关已真）。
             models: { total, disabled },
             accounts: accountStats,
-            closed: total > 0 && disabled === total,
+            // 有模型时看是否全关；无模型时看整供应商标记（见 PROVIDER_CLOSED_KEY）。
+            closed: total > 0 ? disabled === total : disabledMap[PROVIDER_CLOSED_KEY] === true,
           }
         }
         const value: RpcProviderStatusResponse = { statuses }
@@ -4183,14 +4187,17 @@ function registerJetHubEndpoints(
             return { ok: false, error: { code: 'bad-request', message: catalog.error } }
           }
           if (catalog.ids.length === 0) {
-            // 「不关闭模型就不关闭供应商」的落点。
-            return {
-              ok: false,
-              error: { code: 'bad-request', message: '该供应商没有可关闭的模型，未做任何变更' },
-            }
+            // 目录为空：没有模型可关，但关闭仍然有意义 —— 停用账号 + 记下
+            // 「该供应商被关闭」的意图（否则开关显示已打开却点不动，用户永远
+            // 关不掉它；见 PROVIDER_CLOSED_KEY 的注释）。
+            // ⚠️ 目录**读失败**是另一条分支（上面已 return），不能合并。
+            await pool.setModelsDisabled(req.provider, [PROVIDER_CLOSED_KEY])
+          } else {
+            await pool.setModelsDisabled(req.provider, catalog.ids)
+            modelCount = catalog.ids.length
+            // 有模型时清掉整供应商标记：此时「是否已关闭」以模型为准。
+            await pool.clearModelsDisabled(req.provider, [PROVIDER_CLOSED_KEY])
           }
-          await pool.setModelsDisabled(req.provider, catalog.ids)
-          modelCount = catalog.ids.length
         }
         // 账号状态**在模型之后**处理（顺序理由见上）。返回实际变更数，
         // 已是目标状态的账号不计入，避免提示夸大成「已停用 N 个」。

@@ -1272,6 +1272,41 @@ describe('model.list / model.setDisabled 端点', () => {
     expect(result.error?.message).toContain('llm 服务不可用')
   })
 
+  /**
+   * ⚠️ 保留键 `'*'`（整供应商关闭标记）**不得出现在模型列表里**。
+   *
+   * `model.list` 有两条「把被黑名单过滤掉的模型补回列表」的路径（全量目录 /
+   * 已过滤列表），两条都必须跳过保留键 —— 漏掉任一条，设置页就会多出一个
+   * id 为 `*` 的假模型，而它既不是真模型、也点不动。
+   */
+  it('⚠️ model.list 不得把整供应商关闭标记当成模型（id 为 * 的假模型）', async () => {
+    // 两条补回路径都要覆盖：
+    // ① 有适配器实例 ⇒ 走 `listAllModels()` 那条补回分支；
+    // ② 无适配器实例 ⇒ 走 `llm.listModels` + 裸 id 补回分支。
+    const withAdapter = registerEndpoints({
+      models: MODELS,
+      disabledModels: { buddy: { '*': true } },
+      modelAdapters: { buddy: { listAllModels: () => MODELS } },
+    })
+    const a = await withAdapter.call('model.list', { provider: 'buddy' })
+    expect(a.ok, '适配器路径').toBe(true)
+    expect(
+      (a.value as { models: { id: string }[] }).models.some((m) => m.id === '*'),
+      '适配器路径',
+    ).toBe(false)
+
+    const withoutAdapter = registerEndpoints({
+      models: MODELS,
+      disabledModels: { buddy: { '*': true } },
+    })
+    const b = await withoutAdapter.call('model.list', { provider: 'buddy' })
+    expect(b.ok, 'llm 回退路径').toBe(true)
+    expect(
+      (b.value as { models: { id: string }[] }).models.some((m) => m.id === '*'),
+      'llm 回退路径',
+    ).toBe(false)
+  })
+
   it('适配器 listModels 抛错时返回可读错误而不是裸 500', async () => {
     const { call } = registerEndpoints({ models: MODELS, listModelsError: '令牌已过期' })
     const result = await call('model.list', { provider: 'buddy' })
@@ -2122,6 +2157,32 @@ describe('provider.status / provider.setEnabled 端点', () => {
       expect(s.closed).toBe(false)
     })
 
+    /**
+     * ⚠️ 零模型供应商的「已关闭」判据（2026-10-18 真实缺陷修复）。
+     *
+     * 走完整闭环：空目录 → `provider.setEnabled(false)` 写下整供应商标记 →
+     * 再查 `provider.status` 必须报 `closed: true`。少任何一环，用户点完开关
+     * 界面都毫无变化（这正是阶跃面板「点不动」的表现）。
+     */
+    it('⚠️ 零模型 + 整供应商标记 ⇒ closed 为 true（否则关完开关又弹回「已打开」）', async () => {
+      const { call } = setup({ catalog: [] })
+      const set = await call('provider.setEnabled', { provider: 'buddy', enabled: false })
+      expect(set.ok).toBe(true)
+      const result = await call('provider.status', { providers: ['buddy'] })
+      const s = (result.value as { statuses: Record<string, { models: { total: number; disabled: number }; closed: boolean }> }).statuses.buddy
+      // 如实报 0：没有模型被关，关闭意图只体现在标记上。
+      expect(s.models).toEqual({ total: 0, disabled: 0 })
+      expect(s.closed).toBe(true)
+    })
+
+    it('⚠️ 零模型时「已打开」仍判未关闭（标记不该被凭空写入）', async () => {
+      // 与上一条成对：证明 closed 的 true 来自标记，而不是零模型本身。
+      const { call } = setup({ catalog: [], disabledModels: { buddy: {} } })
+      const result = await call('provider.status', { providers: ['buddy'] })
+      const s = (result.value as { statuses: Record<string, { closed: boolean }> }).statuses.buddy
+      expect(s.closed).toBe(false)
+    })
+
     it('⚠️ 适配器缺失时保守判为未关闭（不误报已关闭）', async () => {
       const { call } = setup({ catalog: CATALOG, withAdapter: false, disabledModels: { buddy: { 'glm-5.2': true } } })
       const result = await call('provider.status', { providers: ['buddy'] })
@@ -2229,18 +2290,20 @@ describe('provider.status / provider.setEnabled 端点', () => {
       expect(emitted).toEqual([])
     })
 
-    it('⚠️ 目录为空 → 拒绝且不落盘（「不关闭模型就不关闭供应商」的落点）', async () => {
-      const { call, emitted, writeOrder, storedAccounts } = setup({
+    it('⚠️ 目录为空 → 不再拒绝：停账号并写下整供应商关闭标记', async () => {
+      // 用户报障（2026-10-18）：「Step Code（阶跃）」模型 0、账号 0，开关灰的、点不动。
+      // 旧实现此处整体失败，与 provider.status 的 `total > 0` 前置条件叠加成死角。
+      const { call, storedAccounts, storedDisabled } = setup({
         catalog: [],
         accounts: [{ id: 'b1', provider: 'buddy', enabled: true }],
       })
       const result = await call('provider.setEnabled', { provider: 'buddy', enabled: false })
-      expect(result.ok).toBe(false)
-      expect(result.error?.message).toContain('没有可关闭的模型')
-      // ⚠️ 关键：绝不能「关不掉模型就只停账号」——那会让它显示成已关闭而模型仍在。
-      expect(writeOrder).toEqual([])
-      expect(emitted).toEqual([])
-      expect(storedAccounts()[0].enabled).toBe(true)
+      expect(result.ok).toBe(true)
+      // models 如实回 0：没有模型被关，只是记了整供应商标记。
+      expect(result.value).toMatchObject({ models: 0, accounts: 1 })
+      expect(storedAccounts()[0].enabled).toBe(false)
+      // 标记必须落盘，否则 provider.status 仍判「未关闭」，用户点完开关毫无变化。
+      expect(storedDisabled().buddy).toEqual({ '*': true })
     })
 
     it('已是目标状态时 accounts 计数为 0（不谎报已停用 N 个）', async () => {
