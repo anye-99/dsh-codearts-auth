@@ -91,11 +91,15 @@ describe('providerSwitchState（开关三形态）', () => {
     expect(s.disabled).toBe(false)
   })
 
-  it('① 没有任何模型 → 禁用并给出原因（「不关闭模型就不关闭供应商」）', () => {
+  /**
+   * ⚠️ 真实缺陷（用户报障 2026-10-18）：零模型供应商原先被禁用，于是
+   * 「Step Code（阶跃）」既显示已打开、又点不动 —— 永远关不掉。
+   */
+  it('① 没有任何模型 → **不再禁用**（服务端已支持无模型时关闭）', () => {
     const s = providerSwitchState({ models: { total: 0, disabled: 0 }, closed: false })
-    expect(s.disabled).toBe(true)
+    expect(s.disabled).toBe(false)
     expect(s.checked).toBe(true)
-    expect(s.reason).toContain('没有可关闭的模型')
+    expect(s.reason).toBeNull()
   })
 
   it('② 状态未知（undefined）→ 禁用并说明原因', () => {
@@ -109,12 +113,12 @@ describe('providerSwitchState（开关三形态）', () => {
     expect(providerSwitchState('bogus').disabled).toBe(true)
   })
 
-  it('models 字段缺失时视为 0 → 禁用（不误判为可操作）', () => {
-    expect(providerSwitchState({ accounts: { total: 1 } }).disabled).toBe(true)
+  it('models 字段缺失 → 按无模型处理（可点击）', () => {
+    expect(providerSwitchState({ accounts: { total: 1 } }).disabled).toBe(false)
   })
 
-  it('total 为负数等非法值 → 禁用（不给用户一个无效的操作入口）', () => {
-    expect(providerSwitchState({ models: { total: -5 } }).disabled).toBe(true)
+  it('total 为负数等非法值 → 按无模型处理（可点击）', () => {
+    expect(providerSwitchState({ models: { total: -5 } }).disabled).toBe(false)
   })
 })
 
@@ -183,11 +187,11 @@ describe('providerSwitchRows（弹窗行数据）', () => {
     expect(rows[0].reason).toBe('状态尚未读取')
   })
 
-  it('没有可关闭模型的供应商被禁用并给出原因（服务端也会拒绝这个动作）', () => {
+  it('没有可关闭模型的供应商不再被禁用（服务端已支持无模型时关闭）', () => {
     const rows = providerSwitchRows([P('a')], { a: { models: { total: 0, disabled: 0 } } })
-    expect(rows[0].disabled).toBe(true)
-    expect(rows[0].reason).toBe('该供应商没有可关闭的模型')
-    // 仍然显示为「打开」：未知/无事可做的东西不该被画成被关闭。
+    expect(rows[0].disabled).toBe(false)
+    expect(rows[0].reason).toBeNull()
+    // 未被标记关闭的仍显示为「打开」。
     expect(rows[0].checked).toBe(true)
   })
 

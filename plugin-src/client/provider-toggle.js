@@ -66,6 +66,12 @@ export function groupProviders(providers, statuses) {
  * （见 `provider.setEnabled`），故开关**不该让用户点得动** —— 否则点击后
  * 只得到一句错误提示，属于把服务端的约束暴露成用户的操作挫折。
  *
+ * ⚠️ **没有模型的供应商不再禁用**（真实缺陷修复，用户报障 2026-10-18）：
+ * 原判据与「服务端拒绝关闭」是一体两面，结果「Step Code（阶跃）」这类零模型
+ * 供应商**永远关不掉** —— 既被算作已打开（没有模型可关 ⇒ 不算已关闭），又被
+ * 禁用（点不动）。现服务端已支持无模型时关闭（停用账号 + 记下关闭意图），
+ * 故这里同步放开；`checked` 照常读后端给的 `closed`。
+ *
  * 状态未知（undefined / 字段缺失）同样禁用：此时既不知道它开没开，也不知道
  * 有几个模型，让用户点一个状态不明的开关更糟。分组那边则仍把它显示在「已打开」
  * 组（宁多勿少），两处取舍不同是有意的 —— 显示可以保守，操作必须明确。
@@ -77,14 +83,9 @@ export function providerSwitchState(status) {
   if (status === undefined || status === null || typeof status !== 'object') {
     return { checked: true, disabled: true, reason: '状态尚未读取' };
   }
-  const total = typeof status.models?.total === 'number' ? status.models.total : 0;
-  if (total <= 0) {
-    return {
-      checked: true,
-      disabled: true,
-      reason: '该供应商没有可关闭的模型',
-    };
-  }
+  // ⚠️ 这里**不再按 models.total 分流**：无论有没有模型，「已关闭」都由后端
+  // 的 `closed` 决定（无模型时它来自整供应商标记），且都可点击。
+  // 旧实现在 total === 0 时返回禁用，导致零模型供应商永远关不掉。
   return { checked: status.closed !== true, disabled: false, reason: null };
 }
 

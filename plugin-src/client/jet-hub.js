@@ -3575,7 +3575,7 @@ function ProviderSwitchPanel({ providers, statuses, statusFailed, busyIds, onTog
       }, '完成'))),
   React.createElement('p', { className: 'dim-jh-modalHint' },
     '关闭一个供应商 = 关闭它的全部模型（从对话框的模型选择里移除）并停用它的全部账号；'
-    + '打开则恢复。关闭前会再确认一次。没有可关闭模型的供应商会被禁用（服务端也会拒绝）。'),
+    + '打开则恢复。关闭前会再确认一次。'),
   React.createElement('div', { className: 'dim-jh-modalBody' },
     React.createElement('div', { className: 'dim-jh-modelList' },
       rows.map(row => {

@@ -61,6 +61,18 @@ const EMPTY_MODEL_SET: ReadonlySet<string> = new Set<string>()
 export const ALL_MODELS_RATE_LIMIT_KEY = '*'
 
 /**
+ * 模型黑名单里表示「**整个供应商被关闭**」的保留键。
+ *
+ * 用于「没有模型的供应商也要能关闭」：此时没有真实模型可写进黑名单，但关闭
+ * 仍然有意义（停用账号 + 记下关闭意图）。复用黑名单表而非新增字段 —— 它已在
+ * `state.json` 里、已被备份携带，不必改持久化与备份。
+ *
+ * ⚠️ 遍历黑名单键的代码必须跳过本键（`model.list` 的「补回被过滤模型」逻辑），
+ * 否则设置页会冒出 id 为 `*` 的假模型。
+ */
+export const PROVIDER_CLOSED_KEY = '*'
+
+/**
  * 该账号在 `modelId` 上是否**当前**处于受限状态（`resetAt` 尚未到期）。
  *
  * 判据同时看两个键，次序无关紧要：
